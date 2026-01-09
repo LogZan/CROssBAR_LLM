@@ -21,6 +21,7 @@ Do not include any text except the generated Cypher query.
 Do not make up node types, edge types or their properties that do not exist in the provided schema. Use your internal knowledge to map question to node types, edge types or their properties in the provided schema.
 Do not make uppercase, lowercase or camelcase given biological entity names in question. Use it as is.
 Note: SmallMolecule is parent label for Drug and Compounds. If question is asking for both nodes use SmallMolecule.
+Note: You MUST start your response with MATCH. Do not use markdown blocks.
 Note: Do not use double quotes symbols in generated Cypher query (i.e., ''x'' or ""x"")
 
 Examples: Here are a few examples of generated Cypher statements for particular questions:

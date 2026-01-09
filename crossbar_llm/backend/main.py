@@ -48,6 +48,8 @@ load_dotenv()
 origins = [
     "http://localhost:8501",  # React app running on localhost
     "http://127.0.0.1:8501",
+    "http://localhost:3000",  # React default port
+    "http://127.0.0.1:3000",
     f"https://crossbarv2.hubiodatalab.com{os.getenv('REACT_APP_CROSSBAR_LLM_ROOT_PATH')}",
 ]
 

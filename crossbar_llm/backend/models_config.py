@@ -42,6 +42,9 @@ MODELS_CONFIG = {
         "x-ai/grok-4",
         "x-ai/grok-3",
         "tencent/hunyuan-a13b-instruct",
+        "google/gemini-3-pro-preview",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-opus-4.5",
     ],
     "Ollama": [
         "codestral:latest",

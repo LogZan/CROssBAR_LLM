@@ -306,6 +306,7 @@ def correct_query(query: str, edge_schema: list) -> str:
     if corrected_query:
         Logger.info("Query successfully corrected")
     else:
-        Logger.warning("Query could not be corrected")
+        Logger.warning("Query could not be corrected, falling back to original query")
+        corrected_query = query  # Fallback to original query
     
     return corrected_query

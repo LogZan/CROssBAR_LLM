@@ -284,12 +284,13 @@ class OpenRouterLanguageModel:
 
     def __init__(
         self, api_key: str, model_name: str = None, temperature: float | int = None,
-        base_url: str = "https://openrouter.ai/api/v1"
+        base_url: str = None
     ):
         self.model_name = model_name or "deepseek/deepseek-r1"
         self.temperature = temperature or 0
+        self.base_url = base_url or os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
         self.llm = ChatOpenAI(
-            api_key=api_key, model_name=self.model_name, temperature=self.temperature, request_timeout=600, base_url=base_url
+            openai_api_key=api_key, model_name=self.model_name, temperature=self.temperature, request_timeout=600, openai_api_base=self.base_url
         )
 
 
@@ -413,6 +414,14 @@ class QueryChain:
             )
 
             self.generated_query = self.generated_query.format(user_input=embedding)
+
+        # Basic validation to check if it looks like a Cypher query
+        valid_prefixes = ["MATCH", "CREATE", "MERGE", "CALL", "RETURN", "WITH", "UNWIND"]
+        is_query = any(self.generated_query.upper().lstrip().startswith(prefix) for prefix in valid_prefixes)
+        
+        if not is_query:
+            logging.warning(f"Generated text does not appear to be a Cypher query: {self.generated_query}")
+            return self.generated_query  # Return the text as is, assuming it's an error message
 
         corrected_query = correct_query(
             query=self.generated_query, edge_schema=self.schema["edges"]
