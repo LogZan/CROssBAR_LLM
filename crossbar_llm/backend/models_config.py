@@ -1,4 +1,16 @@
 MODELS_CONFIG = {
+    "OpenRouter": [
+        "Qwen/Qwen3-32B",
+        "deepseek-v3-2-251201",
+        "deepseek-r1-250528",
+        "gemini-2.5-flash-nothinking",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-opus-4.5",
+        "gpt-5.2",
+        "gpt-oss-120b",
+    ],
     "OpenAI": [
         "gpt-5.1",
         "gpt-5",
@@ -31,20 +43,6 @@ MODELS_CONFIG = {
         "llama-3.1-8b-instant",
         "groq/compound",
         "groq/compound-mini",
-    ],
-    "OpenRouter": [
-        "deepseek/deepseek-r1-distill-llama-70b",
-        "deepseek/deepseek-r1:free",
-        "deepseek/deepseek-r1",
-        "deepseek/deepseek-chat",
-        "qwen/qwen3-235b-a22b-2507",
-        "moonshotai/kimi-k2",
-        "x-ai/grok-4",
-        "x-ai/grok-3",
-        "tencent/hunyuan-a13b-instruct",
-        "google/gemini-3-pro-preview",
-        "anthropic/claude-sonnet-4.5",
-        "anthropic/claude-opus-4.5",
     ],
     "Ollama": [
         "codestral:latest",

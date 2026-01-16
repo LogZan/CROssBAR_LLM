@@ -23,7 +23,7 @@ from .qa_templates import (
     CYPHER_OUTPUT_PARSER_PROMPT,
     VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
 )
-from langchain.chains import LLMChain
+from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import Ollama, Replicate
 from langchain_google_genai import GoogleGenerativeAI
@@ -162,7 +162,7 @@ class OpenAILanguageModel:
             self.llm = ChatOpenAI(
                 api_key=api_key,
                 model_name=self.model_name,
-                request_timeout=600,
+                request_timeout=30,
                 temperature=1,
             )
         else:
@@ -170,7 +170,7 @@ class OpenAILanguageModel:
                 api_key=api_key,
                 model_name=self.model_name,
                 temperature=self.temperature,
-                request_timeout=600,
+                request_timeout=30,
             )
 
 
@@ -189,7 +189,7 @@ class GoogleGenerativeLanguageModel:
             api_key=api_key,
             model=self.model_name,
             temperature=self.temperature,
-            request_timeout=600,
+            request_timeout=120,
         )
 
 
@@ -256,7 +256,7 @@ class OllamaLanguageModel:
         self.model_name = model_name or "codestral:latest"
         self.temperature = temperature or 0
         self.llm = Ollama(
-            model=self.model_name, temperature=self.temperature, timeout=300
+            model=self.model_name, temperature=self.temperature, timeout=30
         )
 
 
@@ -290,7 +290,7 @@ class OpenRouterLanguageModel:
         self.temperature = temperature or 0
         self.base_url = base_url or os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
         self.llm = ChatOpenAI(
-            openai_api_key=api_key, model_name=self.model_name, temperature=self.temperature, request_timeout=600, openai_api_base=self.base_url
+            openai_api_key=api_key, model_name=self.model_name, temperature=self.temperature, request_timeout=180, openai_api_base=self.base_url
         )
 
 
@@ -328,19 +328,11 @@ class QueryChain:
     ):
 
         if search_type == "db_search":
-            self.cypher_chain = LLMChain(
-                llm=cypher_llm, prompt=CYPHER_GENERATION_PROMPT, verbose=verbose
-            )
+            self.cypher_chain = CYPHER_GENERATION_PROMPT | cypher_llm | StrOutputParser()
         else:
-            self.cypher_chain = LLMChain(
-                llm=cypher_llm,
-                prompt=VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
-                verbose=verbose,
-            )
+            self.cypher_chain = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT | cypher_llm | StrOutputParser()
 
-        self.qa_chain = LLMChain(
-            llm=qa_llm, prompt=CYPHER_OUTPUT_PARSER_PROMPT, verbose=verbose
-        )
+        self.qa_chain = CYPHER_OUTPUT_PARSER_PROMPT | qa_llm | StrOutputParser()
         self.schema = schema
         self.verbose = verbose
         self.search_type = search_type
@@ -361,12 +353,14 @@ class QueryChain:
 
         if self.search_type == "db_search":
             self.generated_query = (
-                self.cypher_chain.run(
-                    node_types=self.schema["nodes"],
-                    node_properties=self.schema["node_properties"],
-                    edge_properties=self.schema["edge_properties"],
-                    edges=self.schema["edges"],
-                    question=question,
+                self.cypher_chain.invoke(
+                    {
+                        "node_types": self.schema["nodes"],
+                        "node_properties": self.schema["node_properties"],
+                        "edge_properties": self.schema["edge_properties"],
+                        "edges": self.schema["edges"],
+                        "question": question,
+                    }
                 )
                 .strip()
                 .strip("\n")
@@ -378,13 +372,15 @@ class QueryChain:
 
         elif self.search_type == "vector_search" and embedding is None:
             self.generated_query = (
-                self.cypher_chain.run(
-                    node_types=self.schema["nodes"],
-                    node_properties=self.schema["node_properties"],
-                    edge_properties=self.schema["edge_properties"],
-                    edges=self.schema["edges"],
-                    question=question,
-                    vector_index=vector_index,
+                self.cypher_chain.invoke(
+                    {
+                        "node_types": self.schema["nodes"],
+                        "node_properties": self.schema["node_properties"],
+                        "edge_properties": self.schema["edge_properties"],
+                        "edges": self.schema["edges"],
+                        "question": question,
+                        "vector_index": vector_index,
+                    }
                 )
                 .strip()
                 .strip("\n")
@@ -397,13 +393,15 @@ class QueryChain:
         elif self.search_type == "vector_search" and embedding is not None:
 
             self.generated_query = (
-                self.cypher_chain.run(
-                    node_types=self.schema["nodes"],
-                    node_properties=self.schema["node_properties"],
-                    edge_properties=self.schema["edge_properties"],
-                    edges=self.schema["edges"],
-                    question=question,
-                    vector_index=vector_index,
+                self.cypher_chain.invoke(
+                    {
+                        "node_types": self.schema["nodes"],
+                        "node_properties": self.schema["node_properties"],
+                        "edge_properties": self.schema["edge_properties"],
+                        "edges": self.schema["edges"],
+                        "question": question,
+                        "vector_index": vector_index,
+                    }
                 )
                 .strip()
                 .strip("\n")
@@ -621,8 +619,8 @@ class RunPipeline:
                 search_type=self.search_type,
             )
 
-        final_output = query_chain.qa_chain.run(
-            output=result, input_question=question
+        final_output = query_chain.qa_chain.invoke(
+            {"output": result, "input_question": question}
         ).strip("\n")
 
         logging.info(f"{final_output}")
@@ -691,8 +689,8 @@ class RunPipeline:
             )
             return None
 
-        final_output = query_chain.qa_chain.run(
-            output=result, input_question=question
+        final_output = query_chain.qa_chain.invoke(
+            {"output": result, "input_question": question}
         ).strip("\n")
 
         logging.info(f"{final_output}")
