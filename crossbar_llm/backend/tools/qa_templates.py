@@ -170,9 +170,105 @@ Cypher Output:
 Question: 
 {input_question}"""
 
-CYPHER_OUTPUT_PARSER_PROMPT = PromptTemplate(input_variables=["output", "input_question"], 
+CYPHER_OUTPUT_PARSER_PROMPT = PromptTemplate(input_variables=["output", "input_question"],
                                              template=CYPHER_OUTPUT_PARSER_TEMPLATE)
 
+
+ENTITY_IDENTIFICATION_TEMPLATE = """Task: Identify biological entities in the user's question, especially protein sequences.
+
+Instructions:
+- Detect if the input contains a protein sequence (amino acid string using single-letter codes: A,C,D,E,F,G,H,I,K,L,M,N,P,Q,R,S,T,V,W,Y)
+- Protein sequences may appear in various formats:
+  * Plain text: MKTAYIAKQRQISFVK...
+  * XML tags: <protein>MKTAYIAKQRQISFVK...</protein>
+  * JSON format: "input": "<protein>MKTAYIAKQRQISFVK...</protein>"
+- Protein sequences typically start with M and are 30+ characters long
+- Extract the actual amino acid sequence, removing any XML tags or formatting
+- Extract entity type (Protein, Gene, Drug, Disease, etc.)
+
+Return ONLY a JSON object with this exact structure (no markdown, no explanations):
+{{
+  "has_protein_sequence": true/false,
+  "entities": [
+    {{
+      "type": "Protein",
+      "sequence": "MFASCH..." or null,
+      "identifier": "entity name or ID" or null,
+      "name": "entity name" or null
+    }}
+  ],
+  "confidence": 0.0-1.0
+}}
+
+Examples:
+
+Question: "What drugs target BRCA1 protein?"
+Output: {{"has_protein_sequence": false, "entities": [{{"type": "Protein", "sequence": null, "identifier": "BRCA1", "name": "BRCA1 protein"}}], "confidence": 0.9}}
+
+Question: "MKTAYIAKQRQISFVKSHFSRQLEERLISEEDL what is this protein's function?"
+Output: {{"has_protein_sequence": true, "entities": [{{"type": "Protein", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLISEEDL", "identifier": null, "name": null}}], "confidence": 0.95}}
+
+Question: "input": "<protein>MSSHKTFRIKRFLAKKQKQNRPIPQWIRMKTGNKIRYNSKRRHWRRTKLGL</protein>"
+Output: {{"has_protein_sequence": true, "entities": [{{"type": "Protein", "sequence": "MSSHKTFRIKRFLAKKQKQNRPIPQWIRMKTGNKIRYNSKRRHWRRTKLGL", "identifier": null, "name": null}}], "confidence": 0.95}}
+
+Question: {question}
+Output:"""
+
+ENTITY_IDENTIFICATION_PROMPT = PromptTemplate(
+    input_variables=["question"],
+    template=ENTITY_IDENTIFICATION_TEMPLATE
+)
+
+
+NODE_SCHEMA_EXTRACTION_TEMPLATE = """Generate a Cypher query to locate a specific node and extract its schema (property names and edge types only, NOT data values).
+
+Entity Information:
+- Entity Type: {entity_type}
+- Identifier: {identifier}
+- Is Sequence: {is_sequence}
+
+Requirements:
+1. Node Matching:
+   - If is_sequence=true: MATCH (n:{entity_type} {{sequence: '{identifier}'}})
+   - If is_sequence=false: MATCH (n:{entity_type}) WHERE n.name CONTAINS '{identifier}' OR n.id = '{identifier}'
+
+2. Schema Extraction (use keys() to get names only):
+   - Get property names: keys(n)
+   - Get outgoing edges: (n)-[r_out]->(m_out)
+   - Get incoming edges: (n)<-[r_in]-(m_in)
+   - For each edge, collect: type(r), labels(connected_node), keys(r)
+
+3. Output Format:
+   Return a JSON object with node_id, node_type, properties (list of names), and edges (list of edge info)
+
+Example Query Structure:
+MATCH (n:Protein {{id: 'uniprot:P38398'}})
+WITH n, keys(n) AS properties
+OPTIONAL MATCH (n)-[r_out]->(m_out)
+WITH n, properties,
+     collect(DISTINCT {{
+         type: type(r_out),
+         target: labels(m_out)[0],
+         properties: keys(r_out)
+     }}) AS out_edges
+OPTIONAL MATCH (n)<-[r_in]-(m_in)
+RETURN {{
+    node_id: n.id,
+    node_type: labels(n)[0],
+    properties: properties,
+    edges: out_edges + collect(DISTINCT {{
+        type: type(r_in),
+        source: labels(m_in)[0],
+        properties: keys(r_in)
+    }})
+}} AS schema
+
+Generate the Cypher query now:"""
+
+NODE_SCHEMA_EXTRACTION_PROMPT = PromptTemplate(
+    input_variables=["entity_type", "identifier", "is_sequence"],
+    template=NODE_SCHEMA_EXTRACTION_TEMPLATE
+)
 
 
 QUESTION_GENERATOR_TEMPLATE = """

@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 from .neo4j_query_corrector import correct_query
 from .neo4j_query_executor_extractor import Neo4jGraphHelper
+from .entity_centric_schema_resolver import EntityCentricSchemaResolver
 from .qa_templates import (
     CYPHER_GENERATION_PROMPT,
     CYPHER_OUTPUT_PARSER_PROMPT,
@@ -325,6 +326,9 @@ class QueryChain:
         schema: dict,
         verbose: bool = False,
         search_type: Literal["vector_search", "db_search"] = "db_search",
+        use_entity_centric_resolver: bool = False,
+        resolver_config: dict = None,
+        neo4j_helper: Neo4jGraphHelper = None,
     ):
 
         if search_type == "db_search":
@@ -339,6 +343,21 @@ class QueryChain:
 
         self.generated_queries = []
 
+        # Initialize EntityCentricSchemaResolver if enabled
+        self.resolver = None
+        if use_entity_centric_resolver and neo4j_helper:
+            try:
+                self.resolver = EntityCentricSchemaResolver(
+                    llm_client=cypher_llm,
+                    neo4j_helper=neo4j_helper,
+                    cache_dir=resolver_config.get("cache_dir", "cache") if resolver_config else "cache",
+                    config=resolver_config or {}
+                )
+                logging.info("EntityCentricSchemaResolver initialized successfully")
+            except Exception as e:
+                logging.error(f"Failed to initialize EntityCentricSchemaResolver: {e}")
+                self.resolver = None
+
     @timeout(180)
     @validate_call
     def run_cypher_chain(
@@ -351,14 +370,29 @@ class QueryChain:
         Executes the query chain: generates a query, corrects it, and returns the corrected query.
         """
 
+        # Try entity-centric schema resolution
+        schema_context = self.schema  # Default to full schema
+        if self.resolver:
+            try:
+                logging.info("Attempting entity-centric schema resolution")
+                resolved_schema = self.resolver.resolve(question)
+                if resolved_schema:
+                    schema_context = resolved_schema
+                    logging.info("Using entity-centric filtered schema")
+                else:
+                    logging.info("Entity resolution returned None, using full schema")
+            except Exception as e:
+                logging.warning(f"Entity resolution failed: {e}, using full schema")
+                schema_context = self.schema
+
         if self.search_type == "db_search":
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": self.schema["nodes"],
-                        "node_properties": self.schema["node_properties"],
-                        "edge_properties": self.schema["edge_properties"],
-                        "edges": self.schema["edges"],
+                        "node_types": schema_context["nodes"],
+                        "node_properties": schema_context["node_properties"],
+                        "edge_properties": schema_context["edge_properties"],
+                        "edges": schema_context["edges"],
                         "question": question,
                     }
                 )
@@ -374,10 +408,10 @@ class QueryChain:
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": self.schema["nodes"],
-                        "node_properties": self.schema["node_properties"],
-                        "edge_properties": self.schema["edge_properties"],
-                        "edges": self.schema["edges"],
+                        "node_types": schema_context["nodes"],
+                        "node_properties": schema_context["node_properties"],
+                        "edge_properties": schema_context["edge_properties"],
+                        "edges": schema_context["edges"],
                         "question": question,
                         "vector_index": vector_index,
                     }
@@ -395,10 +429,10 @@ class QueryChain:
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": self.schema["nodes"],
-                        "node_properties": self.schema["node_properties"],
-                        "edge_properties": self.schema["edge_properties"],
-                        "edges": self.schema["edges"],
+                        "node_types": schema_context["nodes"],
+                        "node_properties": schema_context["node_properties"],
+                        "edge_properties": schema_context["edge_properties"],
+                        "edges": schema_context["edges"],
                         "question": question,
                         "vector_index": vector_index,
                     }
@@ -445,6 +479,8 @@ class RunPipeline:
         top_k: int = 5,
         reset_schema: bool = False,
         search_type: Literal["vector_search", "db_search"] = "db_search",
+        use_entity_centric_resolver: bool = None,
+        resolver_config: dict = None,
     ):
 
         self.verbose = verbose
@@ -459,6 +495,32 @@ class RunPipeline:
             create_vector_indexes=False if search_type == "db_search" else True,
         )
         self.search_type = search_type
+
+        # Load entity-centric resolver configuration
+        if use_entity_centric_resolver is None or resolver_config is None:
+            # Try to load from batch_config.yaml
+            try:
+                import yaml
+                config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "batch_config.yaml")
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        batch_config = yaml.safe_load(f)
+                        resolver_settings = batch_config.get("entity_centric_resolver", {})
+                        if use_entity_centric_resolver is None:
+                            use_entity_centric_resolver = resolver_settings.get("enabled", False)
+                        if resolver_config is None:
+                            resolver_config = resolver_settings
+                else:
+                    use_entity_centric_resolver = False
+                    resolver_config = {}
+            except Exception as e:
+                logging.warning(f"Failed to load resolver config from batch_config.yaml: {e}")
+                use_entity_centric_resolver = False
+                resolver_config = {}
+
+        self.use_entity_centric_resolver = use_entity_centric_resolver
+        self.resolver_config = resolver_config
+        logging.info(f"Entity-centric resolver enabled: {self.use_entity_centric_resolver}")
 
         # define llm type(s)
         self.define_llm(model_name)
@@ -555,6 +617,9 @@ class RunPipeline:
                 qa_llm=self.llm["qa_llm"],
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -562,6 +627,9 @@ class RunPipeline:
                 qa_llm=self.llm,
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
 
         if self.search_type == "db_search":
@@ -610,6 +678,9 @@ class RunPipeline:
                 qa_llm=self.llm["qa_llm"],
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -617,6 +688,9 @@ class RunPipeline:
                 qa_llm=self.llm,
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
 
         final_output = query_chain.qa_chain.invoke(
@@ -653,6 +727,9 @@ class RunPipeline:
                 qa_llm=self.llm["qa_llm"],
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -660,6 +737,9 @@ class RunPipeline:
                 qa_llm=self.llm,
                 schema=self.neo4j_connection.schema,
                 search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
             )
 
         if self.search_type == "db_search":

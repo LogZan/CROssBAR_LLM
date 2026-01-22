@@ -66,3 +66,15 @@ output:
 hot_reload:
   enabled: true
   check_interval: 5  # Seconds between config file checks
+
+# =============================================================================
+# Entity-Centric Schema Resolver Settings
+# =============================================================================
+entity_centric_resolver:
+  enabled: true
+  cache_dir: "cache"
+  max_entities: 5
+  max_edge_types: 200
+  cache_ttl_hours: 24
+  similarity_threshold: 0.7
+  lightweight_model: "gpt-oss-120b"
