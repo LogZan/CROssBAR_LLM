@@ -1,0 +1,68 @@
+# Batch LLM Testing Configuration
+# This file controls batch testing of multiple LLMs on benchmark questions
+
+# =============================================================================
+# Model Provider Settings
+# =============================================================================
+provider: "OpenRouter"  # Default provider for all models below
+
+# Models to test (can add/remove freely)
+# These will be auto-registered to models_config.py if not present
+models:
+  - "Qwen/Qwen3-32B"
+  - "deepseek-v3-2-251201"
+  # - "gemini-3-flash-preview"
+  - "gemini-3-pro-preview"
+  - "gpt-oss-120b"
+
+# =============================================================================
+# Question Source Settings
+# =============================================================================
+questions:
+  # Option 1: Custom questions (used when benchmark.enabled is false)
+  custom:
+    # - "Which Gene is related to the Disease named psoriasis?"
+    # - '"instruction": "Does this protein associate with any specific small molecule ligands (molecular_function) or cofactors besides its enzymatic substrates, and if so, what is the most likely category of these molecules?", "input": "<protein>MSGVRGLSRLLSARRLALAKAWPTVLQTGTRGFHFTVDGNKRASAKVSDSISAQYPVVDHEFDAVVVGAGGAGLRAAFGLSEAGFNTACVTKLFPTRSHTVAAQGGINAALGNMEEDNWRWHFYDTVKGSDWLGDQDAIHYMTEQAPAAVVELENYGMPFSRTEDGKIYQRAFGGQSLKFGKGGQAHRCCCVADRTGHSLLHTLYGRSLRYDTSYFVEYFALDLLMENGECRGVIALCIEDGSIHRIRAKNTVVATGGYGRTYFSCTSAHTSTGDGTAMITRAGLPCQDLEFVQFHPTGIYGAGCLITEGCRGEGGILINSQGERFMERYAPVAKDLASRDVVSRSMTLEIREGRGCGPEKDHVYLQLHHLPPEQLATRLPGISETAMIFAGVDVTKEPIPVLPTVHYNMGGIPTNYKGQVLRHVNGQDQIVPGLYACGEAACASVHGANRLGANSLLDLVVFGRACALSIEESCRPGDKVPPIKPNAGEESVMNLDKLRFADGSIRTSELRLSMQKSMQNHAAVFRVGSVLQEGCGKISKLYGDLKHLKTFDRGMVWNTDLVETLELQNLMLCALQTIYGAEARKESRGAHAREDYKVRIDEYDYSKPIQGQQKKPFEEHWRKHTLSYVDVGTGKVTLEYRPVIDKTLNEADCATVPPAIRSY</protein>"'
+    # - '"instruction": "Identify the types of post-translational modifications associated with this protein.", "input": "<protein>MSSHKTFRIKRFLAKKQKQNRPIPQWIRMKTGNKIRYNSKRRHWRRTKLGL</protein>"'
+    - '"instruction": "Does this protein possess transmembrane regions, and if so, how are they categorized?", "input": "<protein>MFASCHCVPRGRRTMKMIHFRSSSVKSLSQEMRCTIRLLDDSEISCHIQRETKGQFLIDHICNYYSLLEKDYFGIRYVDPEKQRHWLEPNKSIFKQMKTHPPYTMCFRVKFYPHEPLKIKEELTRYLLYLQIKRDIFHGRLLCSFSDAAYLGACIVQAELGDYDPDEHPENYISEFEIFPKQSQKLERKIVEIHKNELRGQSPPVAEFNLLLKAHTLETYGVDPHPCKDSTGTTTFLGFTAAGFVVFQGNKRIHLIKWPDVCKLKFEGKTFYVIGTQKEKKAMLAFHTSTPAACKHLWKCGVENQAFYKYAKSSQIKTVSSSKIFFKGSRFRYSGKVAKEVVEASSKIQREPPEVHRANITQSRSSHSLNKQLIINMEPLQPLLPSPSEQEEELPLGEGVPLPKEENISAPLISSSPVKAAREYEDPPSEEEDKIKEEPLTISELVYNPSASLLPTPVDDDEIDMLFDCPSRLELEREDTDSFEDLEADENAFLIAEEEELKEARRALSWSYDILTGHIRVNPLVKSFSRLLVVGLGLLLFVFPLLLLLLESGIDLSFLCEIRQTPEFEQFHYEYYCPLKEWVAGKVHLILYMLGCS</protein>"'
+
+  # Option 2: Load from Benchmark file
+  benchmark:
+    enabled: false
+    file: "Benchmark/v0112.jsonl"
+    # Select questions by index (1-based) or question_id
+    # Leave both empty to test ALL questions
+    indices: [1]  # Test with first question only
+    question_ids: []  # e.g., ["cd787a9f", "651de2e7"]
+
+# =============================================================================
+# Execution Settings
+# =============================================================================
+execution:
+  # Parallel execution of multiple models
+  parallel: true
+  max_workers: 4  # Max concurrent model tests
+  
+  # Rate limiting (seconds between API calls)
+  request_interval: 1.0
+  
+  # Retry settings for failed requests
+  retry:
+    max_attempts: 3
+    backoff_factor: 2.0  # Exponential backoff multiplier
+    initial_delay: 1.0  # Initial delay in seconds
+
+# =============================================================================
+# Output Settings
+# =============================================================================
+output:
+  base_dir: "batch_output"
+  save_debug_logs: true
+  save_raw_responses: true
+
+# =============================================================================
+# Config Reload Settings
+# =============================================================================
+hot_reload:
+  enabled: true
+  check_interval: 5  # Seconds between config file checks

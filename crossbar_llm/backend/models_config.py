@@ -108,3 +108,50 @@ def get_provider_for_model_name(model_name: str):
             return provider
     return None
 
+
+def register_model(provider: str, model_name: str) -> bool:
+    """
+    Dynamically register a model to the configuration if it doesn't exist.
+    
+    Args:
+        provider: The provider name (e.g., "OpenRouter", "OpenAI")
+        model_name: The model name to register
+    
+    Returns:
+        True if model was added, False if it already exists
+    """
+    # Normalize provider name (case-insensitive matching)
+    matched_provider = None
+    for key in MODELS_CONFIG.keys():
+        if key.lower() == provider.lower():
+            matched_provider = key
+            break
+    
+    if matched_provider is None:
+        # Create new provider entry
+        MODELS_CONFIG[provider] = [model_name]
+        return True
+    
+    if model_name not in MODELS_CONFIG[matched_provider]:
+        MODELS_CONFIG[matched_provider].append(model_name)
+        return True
+    
+    return False
+
+
+def ensure_models_registered(provider: str, models: list) -> list:
+    """
+    Ensure all models in the list are registered under the specified provider.
+    
+    Args:
+        provider: The provider name
+        models: List of model names to register
+    
+    Returns:
+        List of newly registered model names
+    """
+    newly_registered = []
+    for model_name in models:
+        if register_model(provider, model_name):
+            newly_registered.append(model_name)
+    return newly_registered

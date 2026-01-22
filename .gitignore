@@ -34,3 +34,6 @@ graph_schema.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+batch_output
+Benchmark
