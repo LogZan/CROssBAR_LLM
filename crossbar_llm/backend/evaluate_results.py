@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+Evaluate batch results using an LLM-as-judge.
+
+Reads results_summary.json produced by compare_results.py, adds judge results,
+and updates results_summary.json, results_by_question.md, results_by_model.md.
+"""
+
+import argparse
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+
+from compare_results import ResultComparator, find_latest_run
+from models_config import ensure_models_registered, get_provider_for_model_name
+
+
+@dataclass
+class JudgeConfig:
+    enabled: bool = True
+    model: str = "gemini-3-flash-preview"
+    temperature: float = 0
+    max_tokens: int = 256
+
+
+def load_judge_config(config_path: Path) -> JudgeConfig:
+    if not config_path.exists():
+        return JudgeConfig()
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    judge = data.get("judge", {}) or {}
+    return JudgeConfig(
+        enabled=judge.get("enabled", True),
+        model=judge.get("model", "gemini-3-flash-preview"),
+        temperature=judge.get("temperature", 0),
+        max_tokens=judge.get("max_tokens", 256),
+    )
+
+
+def load_provider(config_path: Path) -> str:
+    if not config_path.exists():
+        return "OpenRouter"
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("provider", "OpenRouter")
+
+
+def get_llm(model_name: str, temperature: float, max_tokens: int):
+    from tools.langchain_llm_qa_trial import (
+        Config,
+        OpenAILanguageModel,
+        GoogleGenerativeLanguageModel,
+        AnthropicLanguageModel,
+        GroqLanguageModel,
+        OllamaLanguageModel,
+        NVIDIALanguageModel,
+        OpenRouterLanguageModel,
+    )
+
+    provider_model_map = {
+        "OpenAI": OpenAILanguageModel,
+        "Google": GoogleGenerativeLanguageModel,
+        "Anthropic": AnthropicLanguageModel,
+        "Groq": GroqLanguageModel,
+        "Ollama": OllamaLanguageModel,
+        "Nvidia": NVIDIALanguageModel,
+        "OpenRouter": OpenRouterLanguageModel,
+    }
+
+    provider = get_provider_for_model_name(model_name)
+    if not provider:
+        raise ValueError(f"Unsupported Language Model Name: {model_name}")
+    if provider not in provider_model_map:
+        raise ValueError(f"Unsupported Provider: {provider}")
+
+    config = Config()
+    model_class = provider_model_map[provider]
+    if provider == "Ollama":
+        llm = model_class(model_name=model_name, temperature=temperature).llm
+    else:
+        api_key_attr = {
+            "OpenAI": "openai_api_key",
+            "Google": "gemini_api_key",
+            "Anthropic": "anthropic_api_key",
+            "Groq": "groq_api_key",
+            "Nvidia": "nvidia_api_key",
+            "OpenRouter": "openrouter_api_key",
+        }[provider]
+        api_key = getattr(config, api_key_attr)
+        llm = model_class(api_key, model_name=model_name, temperature=temperature).llm
+
+    if hasattr(llm, "max_tokens"):
+        try:
+            llm.max_tokens = max_tokens
+        except Exception:
+            pass
+    return llm
+
+
+def is_empty_answer(answer: Optional[str]) -> bool:
+    if answer is None:
+        return True
+    text = str(answer).strip()
+    if not text:
+        return True
+    return text.lower() in {"n/a", "na"}
+
+
+def parse_json_output(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            return {}
+    return {}
+
+
+def judge_answer(llm, question: str, expected: str, rationale: str, answer: str) -> dict:
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+
+    system_prompt = (
+        "You are a strict evaluator. Decide if the model answer is semantically "
+        "consistent with the benchmark output and covers all core facts. "
+        "If any core fact is missing or contradicted, fail. "
+        "Output ONLY valid JSON: {{\"pass\": true/false, \"reason\": \"...\"}}."
+    )
+    human_prompt = (
+        "Question:\n{question}\n\n"
+        "Benchmark Output:\n{expected}\n\n"
+        "Benchmark Rationale:\n{rationale}\n\n"
+        "Model Answer:\n{answer}\n"
+    )
+
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", system_prompt), ("human", human_prompt)]
+    )
+    chain = prompt | llm | StrOutputParser()
+    raw = chain.invoke(
+        {
+            "question": question,
+            "expected": expected or "",
+            "rationale": rationale or "",
+            "answer": answer or "",
+        }
+    )
+    data = parse_json_output(raw)
+    if not data or "pass" not in data:
+        return {"pass": False, "reason": "Judge output parse error"}
+    return {"pass": bool(data.get("pass")), "reason": str(data.get("reason", "")).strip()}
+
+
+def build_judge_summary(comparisons: list) -> dict:
+    summary: dict[str, dict[str, int]] = {}
+    for comp in comparisons:
+        for model_name, result in comp.get("models", {}).items():
+            summary.setdefault(model_name, {"pass": 0, "fail": 0, "total": 0})
+            judge = result.get("judge")
+            if not judge:
+                continue
+            passed = bool(judge.get("pass"))
+            summary[model_name]["total"] += 1
+            if passed:
+                summary[model_name]["pass"] += 1
+            else:
+                summary[model_name]["fail"] += 1
+    return summary
+
+
+def render_results_by_question(
+    output_path: Path,
+    run_dir: Path,
+    summary: dict,
+    comparisons: list,
+    judge_summary: dict,
+    judge_config: JudgeConfig,
+):
+    lines = []
+    lines.append("# LLM Batch Test Results Summary")
+    lines.append(f"\nGenerated: {datetime.now().isoformat()}")
+    lines.append(f"\nRun Directory: `{run_dir}`")
+    lines.append(f"\nJudge Model: {judge_config.model}")
+
+    lines.append("\n## Summary")
+    lines.append(
+        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) |"
+    )
+    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|")
+
+    for m in summary["models"]:
+        success_str = f"{m['success_count']}/{m['total_count']}"
+        judge_counts = judge_summary.get(m["model"], {"pass": 0, "total": 0})
+        judge_str = f"{judge_counts['pass']}/{judge_counts['total']}"
+        lines.append(
+            f"| {m['model']} | {m['provider']} | {success_str} | {judge_str} | "
+            f"{m['total_cypher_gen_time']:.1f} | {m['total_neo4j_query_time']:.1f} | "
+            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} |"
+        )
+
+    lines.append("\n## Question Comparisons")
+    for comp in comparisons:
+        lines.append(f"\n### Question {comp['question_index']} (ID: {comp['question_id']})")
+
+        q_text = comp.get("question_text") or ""
+        lines.append(f"\n**Question:** {q_text}")
+
+        if comp.get("benchmark_output"):
+            lines.append("\n#### Benchmark Reference")
+            lines.append(f"\n**Expected Output:** {comp['benchmark_output']}")
+            if comp.get("benchmark_rationale"):
+                lines.append(f"\n**Rationale:** {comp['benchmark_rationale']}")
+
+        lines.append("\n#### Generated Queries")
+        for model_name, result in comp["models"].items():
+            status = "✅" if result.get("success") else "❌"
+            query = result.get("generated_query") or "N/A"
+            cypher_time = result.get("cypher_gen_time", 0)
+            lines.append(f"\n**{model_name}** {status} (Cypher Gen: {cypher_time:.1f}s)")
+            lines.append(f"```cypher\n{query}\n```")
+            if result.get("error"):
+                lines.append(f"> Error: {result['error']}")
+
+        lines.append("\n#### Query Results")
+        for model_name, result in comp["models"].items():
+            lines.append(f"\n**{model_name}** (Neo4j: {result.get('neo4j_query_time', 0):.1f}s):")
+            query_result = result.get("query_result")
+            query_result_text = "N/A" if query_result in (None, "") else json.dumps(query_result, ensure_ascii=False, indent=2)
+            lines.append(f"```json\n{query_result_text}\n```")
+
+        lines.append("\n#### Answers")
+        for model_name, result in comp["models"].items():
+            lines.append(f"\n**{model_name}** (Answer Gen: {result.get('answer_gen_time', 0):.1f}s):")
+            answer = result.get("natural_language_answer") or "N/A"
+            lines.append(f"> {answer}")
+
+        lines.append("\n#### Judge")
+        for model_name, result in comp["models"].items():
+            judge = result.get("judge") or {}
+            status = "✅" if judge.get("pass") else "❌"
+            reason = judge.get("reason") or "No judge result"
+            lines.append(f"\n**{model_name}** {status}")
+            lines.append(f"> {reason}")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def render_results_by_model(
+    output_path: Path,
+    run_dir: Path,
+    models: dict,
+    summary: dict,
+    judge_summary: dict,
+    judge_map: dict,
+    judge_config: JudgeConfig,
+):
+    lines = []
+    lines.append("# LLM Batch Test Results (By Model)")
+    lines.append(f"\nGenerated: {datetime.now().isoformat()}")
+    lines.append(f"\nRun Directory: `{run_dir}`")
+    lines.append(f"\nJudge Model: {judge_config.model}")
+
+    lines.append("\n## Summary")
+    lines.append(
+        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) |"
+    )
+    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|")
+
+    for m in summary["models"]:
+        success_str = f"{m['success_count']}/{m['total_count']}"
+        judge_counts = judge_summary.get(m["model"], {"pass": 0, "total": 0})
+        judge_str = f"{judge_counts['pass']}/{judge_counts['total']}"
+        lines.append(
+            f"| {m['model']} | {m['provider']} | {success_str} | {judge_str} | "
+            f"{m['total_cypher_gen_time']:.1f} | {m['total_neo4j_query_time']:.1f} | "
+            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} |"
+        )
+
+    lines.append("\n---")
+    for model_name, model_data in models.items():
+        lines.append(f"\n## Model: {model_name}")
+        lines.append(f"\nProvider: {model_data.get('provider')}")
+        success_count = model_data.get("success_count", 0)
+        failure_count = model_data.get("failure_count", 0)
+        total_count = success_count + failure_count
+        judge_counts = judge_summary.get(model_name, {"pass": 0, "total": 0})
+        lines.append(f"\nSuccess: {success_count}/{total_count}")
+        lines.append(f"\nJudge Pass: {judge_counts['pass']}/{judge_counts['total']}")
+        lines.append(f"\nTotal Time: {model_data.get('total_time_seconds', 0):.1f}s")
+
+        for q in model_data.get("questions", []):
+            q_index = q.get("question_index")
+            lines.append(f"\n### Question {q_index} (ID: {q.get('question_id')})")
+            lines.append(f"\n**Status:** {'✅' if q.get('success') else '❌'}")
+            lines.append(
+                f"\n**Timings:** Cypher Gen: {q.get('cypher_gen_time', 0):.1f}s | "
+                f"Neo4j: {q.get('neo4j_query_time', 0):.1f}s | "
+                f"Answer Gen: {q.get('answer_gen_time', 0):.1f}s | "
+                f"Total: {q.get('execution_time_seconds', 0):.1f}s"
+            )
+            lines.append(f"\n**Question:** {q.get('question')}")
+            lines.append(f"\n**Benchmark Output:** {q.get('benchmark_output')}")
+            if q.get("benchmark_rationale"):
+                lines.append(f"\n**Benchmark Rationale:** {q.get('benchmark_rationale')}")
+
+            lines.append("\n**Generated Query:**")
+            lines.append(f"```cypher\n{q.get('generated_query') or 'N/A'}\n```")
+            if q.get("error"):
+                lines.append(f"\n> **Error:** {q.get('error')}")
+
+            lines.append("\n**Query Result:**")
+            query_result = q.get("query_result")
+            query_result_text = "N/A" if query_result in (None, "") else json.dumps(query_result, ensure_ascii=False, indent=2)
+            lines.append(f"```json\n{query_result_text}\n```")
+
+            lines.append("\n**Answer:**")
+            lines.append(f"> {q.get('natural_language_answer') or 'N/A'}")
+
+            judge = judge_map.get(model_name, {}).get(q_index, {})
+            status = "✅" if judge.get("pass") else "❌"
+            reason = judge.get("reason") or "No judge result"
+            lines.append("\n**Judge:**")
+            lines.append(f"> {status} {reason}")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate results using LLM-as-judge.")
+    parser.add_argument(
+        "--run-dir",
+        "-r",
+        help="Specific run directory (e.g., batch_output/run_2026-01-29_15-02-45)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        default="../../batch_output",
+        help="Base output directory (used to find latest run if --run-dir not specified)",
+    )
+    parser.add_argument(
+        "--config",
+        "-c",
+        default="../../config/batch_config.yaml",
+        help="Path to batch_config.yaml",
+    )
+
+    args = parser.parse_args()
+
+    script_dir = Path(__file__).parent
+    if args.run_dir:
+        run_dir = Path(args.run_dir)
+        if not run_dir.is_absolute():
+            run_dir = script_dir / run_dir
+    else:
+        base_dir = Path(args.output_dir)
+        if not base_dir.is_absolute():
+            base_dir = script_dir / base_dir
+        run_dir = find_latest_run(base_dir)
+        if run_dir is None:
+            print(f"No runs found in {base_dir}")
+            return
+
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = script_dir / config_path
+
+    judge_config = load_judge_config(config_path)
+    provider = load_provider(config_path)
+    if not judge_config.enabled:
+        print("Judge disabled in config. Skipping.")
+        return
+
+    ensure_models_registered(provider, [judge_config.model])
+
+    results_path = run_dir / "results_summary.json"
+    if not results_path.exists():
+        print(f"results_summary.json not found in {run_dir}")
+        return
+
+    with open(results_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    comparisons = data.get("comparisons", [])
+    llm = get_llm(judge_config.model, judge_config.temperature, judge_config.max_tokens)
+
+    for comp in comparisons:
+        question = comp.get("question_text") or ""
+        expected = comp.get("benchmark_output") or ""
+        rationale = comp.get("benchmark_rationale") or ""
+        for model_name, result in comp.get("models", {}).items():
+            answer = result.get("natural_language_answer")
+            if is_empty_answer(answer):
+                result["judge"] = {
+                    "pass": False,
+                    "reason": "Empty or N/A answer",
+                    "model": judge_config.model,
+                }
+                continue
+            judge = judge_answer(llm, question, expected, rationale, answer)
+            result["judge"] = {
+                "pass": judge.get("pass", False),
+                "reason": judge.get("reason", ""),
+                "model": judge_config.model,
+            }
+
+    data["judge_config"] = {
+        "model": judge_config.model,
+        "temperature": judge_config.temperature,
+        "max_tokens": judge_config.max_tokens,
+    }
+    data["judge_generated_at"] = datetime.now().isoformat()
+    data["judge_summary"] = build_judge_summary(comparisons)
+
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    comparator = ResultComparator(run_dir)
+    summary = comparator.get_summary()
+    judge_summary = data["judge_summary"]
+
+    judge_map: dict[str, dict[int, dict[str, Any]]] = {}
+    for comp in comparisons:
+        for model_name, result in comp.get("models", {}).items():
+            judge_map.setdefault(model_name, {})[comp["question_index"]] = result.get("judge", {})
+
+    render_results_by_question(
+        run_dir / "results_by_question.md",
+        run_dir,
+        summary,
+        comparisons,
+        judge_summary,
+        judge_config,
+    )
+    render_results_by_model(
+        run_dir / "results_by_model.md",
+        run_dir,
+        comparator.models,
+        summary,
+        judge_summary,
+        judge_map,
+        judge_config,
+    )
+
+    print(f"Judge results saved to: {results_path}")
+
+
+if __name__ == "__main__":
+    main()

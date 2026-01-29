@@ -42,6 +42,14 @@ if [ -n "$LATEST_RUN" ]; then
     echo ""
     
     python compare_results.py --run-dir "$LATEST_RUN" --format both
+
+    echo ""
+    echo "=============================================="
+    echo "  Running LLM Judge"
+    echo "=============================================="
+    echo ""
+    
+    python evaluate_results.py --run-dir "$LATEST_RUN"
     
     echo ""
     echo "=============================================="
