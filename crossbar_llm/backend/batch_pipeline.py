@@ -330,6 +330,10 @@ class QuestionResult:
     # Benchmark reference data
     benchmark_output: Optional[str] = None
     benchmark_rationale: Optional[str] = None
+    # Entity-centric resolver status
+    resolver_enabled: Optional[bool] = None
+    resolver_used: Optional[bool] = None
+    resolver_reason: Optional[str] = None
     
     def to_dict(self) -> dict:
         return {
@@ -348,6 +352,9 @@ class QuestionResult:
             "raw_response": self.raw_response if self.raw_response else None,
             "benchmark_output": self.benchmark_output,
             "benchmark_rationale": self.benchmark_rationale,
+            "resolver_enabled": self.resolver_enabled,
+            "resolver_used": self.resolver_used,
+            "resolver_reason": self.resolver_reason,
         }
 
 
@@ -409,6 +416,12 @@ class BatchPipeline:
             self._pipeline = RunPipeline(
                 model_name=self.config.models[0] if self.config.models else "gpt-4o",
                 verbose=False,
+            )
+            resolver_enabled = getattr(self._pipeline, "use_entity_centric_resolver", False)
+            resolver_config = getattr(self._pipeline, "resolver_config", {}) or {}
+            cache_dir = resolver_config.get("cache_dir", "cache")
+            self.logger.info(
+                f"Entity-centric resolver enabled: {resolver_enabled} (cache_dir={cache_dir})"
             )
         return self._pipeline
     
@@ -500,6 +513,16 @@ class BatchPipeline:
                 return result
             
             result.generated_query = query_or_error
+
+            resolver_status = pipeline.get_last_resolver_status()
+            result.resolver_enabled = resolver_status.get("enabled")
+            result.resolver_used = resolver_status.get("used")
+            result.resolver_reason = resolver_status.get("reason")
+            self.logger.info(
+                f"  [{model_name}] Question {question_index}: entity-centric "
+                f"enabled={result.resolver_enabled} used={result.resolver_used} "
+                f"reason={result.resolver_reason}"
+            )
             
             # Step 2 & 3: Execute query on Neo4j and generate answer (LLM)
             if query_or_error and not query_or_error.startswith("Error"):

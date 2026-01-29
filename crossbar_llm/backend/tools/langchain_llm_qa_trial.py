@@ -1,6 +1,8 @@
 import logging
 import os
 import sys
+import threading
+from pathlib import Path
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -342,6 +344,8 @@ class QueryChain:
         self.search_type = search_type
 
         self.generated_queries = []
+        self.last_resolution_used = False
+        self.last_resolution_reason = "not_attempted"
 
         # Initialize EntityCentricSchemaResolver if enabled
         self.resolver = None
@@ -377,13 +381,22 @@ class QueryChain:
                 logging.info("Attempting entity-centric schema resolution")
                 resolved_schema = self.resolver.resolve(question)
                 if resolved_schema:
+                    self.last_resolution_used = True
+                    self.last_resolution_reason = "resolved"
                     schema_context = resolved_schema
                     logging.info("Using entity-centric filtered schema")
                 else:
+                    self.last_resolution_used = False
+                    self.last_resolution_reason = "fallback_full_schema"
                     logging.info("Entity resolution returned None, using full schema")
             except Exception as e:
+                self.last_resolution_used = False
+                self.last_resolution_reason = "resolver_error"
                 logging.warning(f"Entity resolution failed: {e}, using full schema")
                 schema_context = self.schema
+        else:
+            self.last_resolution_used = False
+            self.last_resolution_reason = "resolver_disabled"
 
         if self.search_type == "db_search":
             self.generated_query = (
@@ -485,6 +498,7 @@ class RunPipeline:
 
         self.verbose = verbose
         self.top_k = top_k
+        self._resolver_status = threading.local()
         self.config: Config = Config()
         self.neo4j_connection: Neo4JConnection = Neo4JConnection(
             self.config.neo4j_usr,
@@ -501,8 +515,15 @@ class RunPipeline:
             # Try to load from batch_config.yaml
             try:
                 import yaml
-                config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "batch_config.yaml")
-                if os.path.exists(config_path):
+                config_path = None
+                # Walk up to find project root config/batch_config.yaml
+                current = Path(__file__).resolve()
+                for parent in current.parents:
+                    candidate = parent / "config" / "batch_config.yaml"
+                    if candidate.exists():
+                        config_path = candidate
+                        break
+                if config_path and config_path.exists():
                     with open(config_path, 'r') as f:
                         batch_config = yaml.safe_load(f)
                         resolver_settings = batch_config.get("entity_centric_resolver", {})
@@ -510,7 +531,9 @@ class RunPipeline:
                             use_entity_centric_resolver = resolver_settings.get("enabled", False)
                         if resolver_config is None:
                             resolver_config = resolver_settings
+                        logging.info(f"Loaded entity_centric_resolver config from {config_path}")
                 else:
+                    logging.warning("batch_config.yaml not found when loading resolver config")
                     use_entity_centric_resolver = False
                     resolver_config = {}
             except Exception as e:
@@ -527,6 +550,13 @@ class RunPipeline:
 
         # define outputs list
         self.outputs = []
+
+    def get_last_resolver_status(self) -> dict:
+        return {
+            "enabled": getattr(self._resolver_status, "enabled", False),
+            "used": getattr(self._resolver_status, "used", False),
+            "reason": getattr(self._resolver_status, "reason", "unknown"),
+        }
 
     def define_llm(self, model_name):
         from models_config import get_provider_for_model_name
@@ -642,6 +672,10 @@ class RunPipeline:
                     embedding=embedding, vector_index=vector_index
                 ),
             )
+
+        self._resolver_status.enabled = bool(query_chain.resolver)
+        self._resolver_status.used = bool(getattr(query_chain, "last_resolution_used", False))
+        self._resolver_status.reason = getattr(query_chain, "last_resolution_reason", "unknown")
 
         return corrected_query
 

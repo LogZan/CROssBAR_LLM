@@ -81,7 +81,7 @@ hot_reload:
 # =============================================================================
 entity_centric_resolver:
   enabled: true
-  cache_dir: "cache"
+  cache_dir: "/GenSIvePFS/users/clzeng/workspace/CROssBAR_LLM/cache"
   max_entities: 5
   max_edge_types: 200
   cache_ttl_hours: 24

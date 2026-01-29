@@ -50,6 +50,27 @@ if [ -n "$LATEST_RUN" ]; then
     echo ""
     
     python evaluate_results.py --run-dir "$LATEST_RUN"
+
+    if [ -f "$LATEST_RUN/results_summary.json" ]; then
+        echo ""
+        echo "=============================================="
+        echo "  Judge Summary"
+        echo "=============================================="
+        echo ""
+        python - <<PY
+import json
+from pathlib import Path
+run_dir = Path("$LATEST_RUN")
+path = run_dir / "results_summary.json"
+data = json.loads(path.read_text(encoding="utf-8"))
+summary = data.get("judge_summary", {})
+if not summary:
+    print("No judge summary found.")
+else:
+    for model, stats in summary.items():
+        print(f"{model}: {stats.get('pass', 0)}/{stats.get('total', 0)} pass")
+PY
+    fi
     
     echo ""
     echo "=============================================="
