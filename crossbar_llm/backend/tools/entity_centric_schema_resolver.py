@@ -296,7 +296,25 @@ class EntityCentricSchemaResolver:
 
             if result and result != "Given cypher query did not return any result":
                 schema = result[0].get("schema")
-                logging.info(f"Extracted schema for node {node_id}: {len(schema.get('edges', []))} edges")
+                neighbor_query = f"""
+                MATCH (n:{node_type} {{id: '{escaped_node_id}'}})--(m)
+                WITH labels(m)[0] AS label, keys(m) AS props
+                UNWIND props AS prop
+                RETURN label, collect(DISTINCT prop) AS properties
+                """
+                neighbor_result = self.neo4j_helper.execute(neighbor_query, top_k=200)
+                neighbor_props = {}
+                if neighbor_result and neighbor_result != "Given cypher query did not return any result":
+                    for row in neighbor_result:
+                        label = row.get("label")
+                        props = row.get("properties") or []
+                        if label:
+                            neighbor_props[label] = sorted(set(props))
+                schema["neighbor_node_properties"] = neighbor_props
+                logging.info(
+                    f"Extracted schema for node {node_id}: {len(schema.get('edges', []))} edges, "
+                    f"{len(neighbor_props)} neighbor types"
+                )
                 return schema
 
         except Exception as e:
@@ -345,6 +363,20 @@ class EntityCentricSchemaResolver:
                         "properties": [{"property": p, "type": "STRING"} for p in properties]
                     })
                     seen_node_props.add(prop_key)
+
+            # Merge neighbor node properties
+            neighbor_props = schema.get("neighbor_node_properties", {})
+            for neighbor_label, props in neighbor_props.items():
+                if neighbor_label:
+                    merged["nodes"].add(neighbor_label)
+                if props and neighbor_label:
+                    prop_key = (neighbor_label, tuple(sorted(props)))
+                    if prop_key not in seen_node_props:
+                        merged["node_properties"].append({
+                            "labels": neighbor_label,
+                            "properties": [{"property": p, "type": "STRING"} for p in props]
+                        })
+                        seen_node_props.add(prop_key)
 
             # Merge edges (limit to max_edge_types)
             for edge in schema.get("edges", []):
@@ -399,8 +431,14 @@ class EntityCentricSchemaResolver:
         properties = node_schema.get("properties", [])
         edges_data = node_schema.get("edges", [])
 
+        neighbor_props = node_schema.get("neighbor_node_properties", {})
+        node_labels = {node_type}
+        for label in neighbor_props.keys():
+            if label:
+                node_labels.add(label)
+
         schema = {
-            "nodes": [{"labels": [node_type]}],
+            "nodes": [{"labels": sorted(node_labels)}],
             "node_properties": [{
                 "labels": node_type,
                 "properties": [{"property": p, "type": "STRING"} for p in properties]
@@ -408,6 +446,13 @@ class EntityCentricSchemaResolver:
             "edges": [],
             "edge_properties": []
         }
+
+        for neighbor_label, props in neighbor_props.items():
+            if neighbor_label and props:
+                schema["node_properties"].append({
+                    "labels": neighbor_label,
+                    "properties": [{"property": p, "type": "STRING"} for p in props]
+                })
 
         seen_edge_types = set()
 
