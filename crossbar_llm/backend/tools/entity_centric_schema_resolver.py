@@ -106,12 +106,15 @@ class EntityCentricSchemaResolver:
                     if cached_schema:
                         logging.info(f"Using cached schema for node: {node_id}")
                         schema = dict(cached_schema)
+                        if "target_node_context" not in schema:
+                            schema["target_node_context"] = self._build_target_context(schema, node_id, node_type)
                         schema.setdefault("anchor_entities", []).append(anchor)
                         node_schemas.append(schema)
                     else:
                         # Extract schema from Neo4j
                         schema = self._extract_node_schema(node_id, node_type)
                         if schema:
+                            schema["target_node_context"] = self._build_target_context(schema, node_id, node_type)
                             self._cache_schema(node_id, schema)
                             schema = dict(schema)
                             schema.setdefault("anchor_entities", []).append(anchor)
@@ -364,6 +367,7 @@ class EntityCentricSchemaResolver:
             "edges": [],
             "edge_properties": [],
             "anchor_entities": [],
+            "target_node_context": "",
         }
 
         seen_node_props = set()
@@ -439,6 +443,13 @@ class EntityCentricSchemaResolver:
                 if anchor not in merged["anchor_entities"]:
                     merged["anchor_entities"].append(anchor)
 
+            context = schema.get("target_node_context")
+            if context:
+                if merged["target_node_context"]:
+                    merged["target_node_context"] += "\n\n" + context
+                else:
+                    merged["target_node_context"] = context
+
         # Convert sets to lists
         merged["nodes"] = [{"labels": list(merged["nodes"])}]
 
@@ -474,6 +485,7 @@ class EntityCentricSchemaResolver:
             "edges": [],
             "edge_properties": [],
             "anchor_entities": node_schema.get("anchor_entities", []),
+            "target_node_context": node_schema.get("target_node_context", ""),
         }
 
         for neighbor_label, props in neighbor_props.items():
@@ -514,6 +526,43 @@ class EntityCentricSchemaResolver:
                 seen_edge_types.add(edge_type)
 
         return schema
+
+    def _build_target_context(self, schema: Dict, node_id: str, node_type: str) -> str:
+        lines = []
+        lines.append(f"Target node: {node_type} id={node_id}")
+
+        props = schema.get("properties", []) or []
+        if props:
+            lines.append("Node properties:")
+            lines.append(", ".join(sorted(props)))
+
+        edges = schema.get("edges", []) or []
+        if edges:
+            lines.append("Edges:")
+            for edge in edges:
+                edge_type = edge.get("type")
+                source = edge.get("source")
+                target = edge.get("target")
+                edge_props = edge.get("properties") or []
+                if source:
+                    edge_str = f"(:{source})-[:{edge_type}]->(:{node_type})"
+                elif target:
+                    edge_str = f"(:{node_type})-[:{edge_type}]->(:{target})"
+                else:
+                    edge_str = f"[:{edge_type}]"
+                if edge_props:
+                    lines.append(f"- {edge_str} props={sorted(edge_props)}")
+                else:
+                    lines.append(f"- {edge_str}")
+
+        neighbor_props = schema.get("neighbor_node_properties", {}) or {}
+        if neighbor_props:
+            lines.append("Neighbor node properties:")
+            for label, props in sorted(neighbor_props.items()):
+                if props:
+                    lines.append(f"- {label}: {sorted(props)}")
+
+        return "\n".join(lines).strip()
 
     def _cache_schema(self, node_id: str, schema: Dict) -> None:
         """

@@ -26,7 +26,6 @@ from .qa_templates import (
     CYPHER_OUTPUT_PARSER_PROMPT,
     VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
 )
-from .property_context_builder import PropertyContextBuilder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import Ollama, Replicate
@@ -37,6 +36,26 @@ from langchain_nvidia_ai_endpoints import ChatNVIDIA
 # Import the Language Model wrappers
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, validate_call
+
+try:
+    import tiktoken
+except Exception:
+    tiktoken = None
+
+
+def _count_tokens(text: str, model_name: str = None) -> int:
+    if not text:
+        return 0
+    if tiktoken is None:
+        return len(text.split())
+    try:
+        if model_name:
+            enc = tiktoken.encoding_for_model(model_name)
+        else:
+            enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text))
 
 
 def configure_logging(verbose=False, log_filename="query_log.log"):
@@ -332,7 +351,6 @@ class QueryChain:
         use_entity_centric_resolver: bool = False,
         resolver_config: dict = None,
         neo4j_helper: Neo4jGraphHelper = None,
-        property_context_config: dict = None,
     ):
 
         if search_type == "db_search":
@@ -344,11 +362,10 @@ class QueryChain:
         self.schema = schema
         self.verbose = verbose
         self.search_type = search_type
-        self.property_context_builder = (
-            PropertyContextBuilder(neo4j_helper, property_context_config or {})
-            if neo4j_helper
-            else None
-        )
+        self.last_cypher_prompt_tokens = 0
+        self.last_cypher_output_tokens = 0
+        self.last_qa_prompt_tokens = 0
+        self.last_qa_output_tokens = 0
 
         self.generated_queries = []
         self.last_resolution_used = False
@@ -406,12 +423,18 @@ class QueryChain:
             self.last_resolution_reason = "resolver_disabled"
 
         if self.search_type == "db_search":
-            property_examples = (
-                self.property_context_builder.build_context(self.schema)
-                if self.property_context_builder
-                else ""
-            )
+            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            prompt_text = CYPHER_GENERATION_PROMPT.format(
+                node_types=schema_context["nodes"],
+                node_properties=schema_context["node_properties"],
+                edge_properties=schema_context["edge_properties"],
+                edges=schema_context["edges"],
+                target_context=target_context,
+                anchor_entities=anchor_entities,
+                question=question,
+            )
+            self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -419,7 +442,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "property_examples": property_examples,
+                        "target_context": target_context,
                         "anchor_entities": anchor_entities,
                         "question": question,
                     }
@@ -433,12 +456,19 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is None:
-            property_examples = (
-                self.property_context_builder.build_context(self.schema)
-                if self.property_context_builder
-                else ""
-            )
+            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
+                vector_index=vector_index,
+                node_types=schema_context["nodes"],
+                node_properties=schema_context["node_properties"],
+                edge_properties=schema_context["edge_properties"],
+                edges=schema_context["edges"],
+                target_context=target_context,
+                anchor_entities=anchor_entities,
+                question=question,
+            )
+            self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -446,7 +476,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "property_examples": property_examples,
+                        "target_context": target_context,
                         "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
@@ -461,12 +491,19 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is not None:
-            property_examples = (
-                self.property_context_builder.build_context(self.schema)
-                if self.property_context_builder
-                else ""
-            )
+            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
+                vector_index=vector_index,
+                node_types=schema_context["nodes"],
+                node_properties=schema_context["node_properties"],
+                edge_properties=schema_context["edge_properties"],
+                edges=schema_context["edges"],
+                target_context=target_context,
+                anchor_entities=anchor_entities,
+                question=question,
+            )
+            self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
 
             self.generated_query = (
                 self.cypher_chain.invoke(
@@ -475,7 +512,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "property_examples": property_examples,
+                        "target_context": target_context,
                         "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
@@ -498,6 +535,8 @@ class QueryChain:
         if not is_query:
             logging.warning(f"Generated text does not appear to be a Cypher query: {self.generated_query}")
             return self.generated_query  # Return the text as is, assuming it's an error message
+
+        self.last_cypher_output_tokens = _count_tokens(self.generated_query)
 
         corrected_query = correct_query(
             query=self.generated_query, edge_schema=self.schema["edges"]
@@ -529,6 +568,9 @@ class QueryChain:
                     lines.append(f"- {anchor_type} id={anchor_id}")
         return "\n".join(lines)
 
+    def _format_target_context(self, schema_context: dict) -> str:
+        return schema_context.get("target_node_context", "") or ""
+
 
 class RunPipeline:
 
@@ -548,6 +590,7 @@ class RunPipeline:
         self.verbose = verbose
         self.top_k = top_k
         self._resolver_status = threading.local()
+        self._token_stats = threading.local()
         self.config: Config = Config()
         self.neo4j_connection: Neo4JConnection = Neo4JConnection(
             self.config.neo4j_usr,
@@ -576,25 +619,19 @@ class RunPipeline:
                     with open(config_path, 'r') as f:
                         batch_config = yaml.safe_load(f)
                         resolver_settings = batch_config.get("entity_centric_resolver", {})
-                        property_context_settings = batch_config.get("property_context", {})
                         if use_entity_centric_resolver is None:
                             use_entity_centric_resolver = resolver_settings.get("enabled", False)
                         if resolver_config is None:
                             resolver_config = resolver_settings
-                        self.property_context_config = property_context_settings
                         logging.info(f"Loaded entity_centric_resolver config from {config_path}")
                 else:
                     logging.warning("batch_config.yaml not found when loading resolver config")
                     use_entity_centric_resolver = False
                     resolver_config = {}
-                    self.property_context_config = {}
             except Exception as e:
                 logging.warning(f"Failed to load resolver config from batch_config.yaml: {e}")
                 use_entity_centric_resolver = False
                 resolver_config = {}
-                self.property_context_config = {}
-        else:
-            self.property_context_config = {}
 
         self.use_entity_centric_resolver = use_entity_centric_resolver
         self.resolver_config = resolver_config
@@ -611,6 +648,14 @@ class RunPipeline:
             "enabled": getattr(self._resolver_status, "enabled", False),
             "used": getattr(self._resolver_status, "used", False),
             "reason": getattr(self._resolver_status, "reason", "unknown"),
+        }
+
+    def get_last_token_stats(self) -> dict:
+        return {
+            "cypher_prompt_tokens": getattr(self._token_stats, "cypher_prompt_tokens", 0),
+            "cypher_output_tokens": getattr(self._token_stats, "cypher_output_tokens", 0),
+            "qa_prompt_tokens": getattr(self._token_stats, "qa_prompt_tokens", 0),
+            "qa_output_tokens": getattr(self._token_stats, "qa_output_tokens", 0),
         }
 
     def define_llm(self, model_name):
@@ -705,7 +750,6 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -716,7 +760,6 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
 
         if self.search_type == "db_search":
@@ -733,6 +776,8 @@ class RunPipeline:
         self._resolver_status.enabled = bool(query_chain.resolver)
         self._resolver_status.used = bool(getattr(query_chain, "last_resolution_used", False))
         self._resolver_status.reason = getattr(query_chain, "last_resolution_reason", "unknown")
+        self._token_stats.cypher_prompt_tokens = getattr(query_chain, "last_cypher_prompt_tokens", 0)
+        self._token_stats.cypher_output_tokens = getattr(query_chain, "last_cypher_output_tokens", 0)
 
         return corrected_query
 
@@ -772,7 +817,6 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -783,12 +827,17 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
+
+        qa_prompt_text = CYPHER_OUTPUT_PARSER_PROMPT.format(
+            output=result, input_question=question
+        )
+        self._token_stats.qa_prompt_tokens = _count_tokens(qa_prompt_text)
 
         final_output = query_chain.qa_chain.invoke(
             {"output": result, "input_question": question}
         ).strip("\n")
+        self._token_stats.qa_output_tokens = _count_tokens(final_output)
 
         logging.info(f"{final_output}")
 
@@ -823,7 +872,6 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -834,7 +882,6 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
-                property_context_config=self.property_context_config,
             )
 
         if self.search_type == "db_search":

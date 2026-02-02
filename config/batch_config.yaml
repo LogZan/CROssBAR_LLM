@@ -96,17 +96,3 @@ entity_centric_resolver:
   cache_ttl_hours: 24
   similarity_threshold: 0.7
   lightweight_model: "gpt-oss-120b"
-
-# =============================================================================
-# Property Context Settings (LLM context enrichment)
-# =============================================================================
-property_context:
-  enabled: true
-  cache_dir: "/GenSIvePFS/users/clzeng/workspace/CROssBAR_LLM/cache"
-  cache_ttl_hours: 24
-  max_node_labels: 200
-  max_node_properties: 200
-  max_edge_types: 400
-  max_edge_properties: 200
-  sample_per_property: 20
-  max_context_chars: 40000

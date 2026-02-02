@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+try:
+    import tiktoken
+except Exception:
+    tiktoken = None
 
 # Shanghai timezone (UTC+8)
 SHANGHAI_TZ = timezone(timedelta(hours=8))
@@ -68,6 +72,21 @@ def setup_logging(log_dir: Path, verbose: bool = False) -> logging.Logger:
     logger.addHandler(console_handler)
     
     return logger
+
+
+def _count_tokens(text: str, model_name: str = None) -> int:
+    if not text:
+        return 0
+    if tiktoken is None:
+        return len(text.split())
+    try:
+        if model_name:
+            enc = tiktoken.encoding_for_model(model_name)
+        else:
+            enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text))
 
 
 # =============================================================================
@@ -343,6 +362,11 @@ class QuestionResult:
     cypher_gen_time: float = 0.0  # LLM Cypher query generation time
     neo4j_query_time: float = 0.0  # Neo4j query execution time
     answer_gen_time: float = 0.0  # LLM answer generation time
+    # Token usage
+    cypher_prompt_tokens: int = 0
+    cypher_output_tokens: int = 0
+    answer_prompt_tokens: int = 0
+    answer_output_tokens: int = 0
     success: bool = False
     error: Optional[str] = None
     raw_response: Optional[dict] = None
@@ -368,6 +392,10 @@ class QuestionResult:
             "cypher_gen_time": round(self.cypher_gen_time, 2),
             "neo4j_query_time": round(self.neo4j_query_time, 2),
             "answer_gen_time": round(self.answer_gen_time, 2),
+            "cypher_prompt_tokens": self.cypher_prompt_tokens,
+            "cypher_output_tokens": self.cypher_output_tokens,
+            "answer_prompt_tokens": self.answer_prompt_tokens,
+            "answer_output_tokens": self.answer_output_tokens,
             "success": self.success,
             "error": self.error,
             "raw_response": self.raw_response if self.raw_response else None,
@@ -629,6 +657,9 @@ class BatchPipeline:
                 result.resolver_enabled = resolver_status.get("enabled")
                 result.resolver_used = resolver_status.get("used")
                 result.resolver_reason = resolver_status.get("reason")
+                token_stats = pipeline.get_last_token_stats()
+                result.cypher_prompt_tokens = token_stats.get("cypher_prompt_tokens", 0)
+                result.cypher_output_tokens = token_stats.get("cypher_output_tokens", 0)
                 self.logger.info(
                     f"  [{model_name}] Question {question_index} step {step}: "
                     f"entity-centric enabled={result.resolver_enabled} used={result.resolver_used} "
@@ -715,6 +746,8 @@ class BatchPipeline:
                     "resolver_enabled": result.resolver_enabled,
                     "resolver_used": result.resolver_used,
                     "resolver_reason": result.resolver_reason,
+                    "cypher_prompt_tokens": result.cypher_prompt_tokens,
+                    "cypher_output_tokens": result.cypher_output_tokens,
                 })
 
                 if count >= multi_cfg.min_results:
@@ -737,10 +770,16 @@ class BatchPipeline:
 
                 qa_chain = CYPHER_OUTPUT_PARSER_PROMPT | qa_llm | StrOutputParser()
                 final_output = aggregated_results if aggregated_results else "Given cypher query did not return any result"
+                qa_prompt_text = CYPHER_OUTPUT_PARSER_PROMPT.format(
+                    output=final_output,
+                    input_question=question_text,
+                )
+                result.answer_prompt_tokens = _count_tokens(qa_prompt_text, model_name=model_name)
                 answer = qa_chain.invoke({
                     "output": final_output,
                     "input_question": question_text,
                 }).strip("\n")
+                result.answer_output_tokens = _count_tokens(answer, model_name=model_name)
                 result.answer_gen_time += time.time() - answer_start
                 result.natural_language_answer = answer
                 result.success = True

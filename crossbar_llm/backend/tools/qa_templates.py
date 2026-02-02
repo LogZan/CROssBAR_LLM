@@ -14,8 +14,8 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
-Property examples (non-exhaustive, from the database):
-{property_examples}
+Target node context (properties and edges for resolved entities):
+{target_context}
 Anchor entities (high confidence, use their ids directly when possible):
 {anchor_entities}
 Note: Do not include any explanations or apologies in your responses.
@@ -27,8 +27,9 @@ Do not make uppercase, lowercase or camelcase given biological entity names in q
 Note: SmallMolecule is parent label for Drug and Compounds. If question is asking for both nodes use SmallMolecule.
 Note: You MUST start your response with MATCH. Do not use markdown blocks.
 Note: Do not use double quotes symbols in generated Cypher query (i.e., ''x'' or ""x"")
-Note: Prefer values seen in Property examples when filtering. If a value is not shown, avoid exact matches unless the question explicitly gives it.
+Note: Prefer properties and edges shown in Target node context. If a value or property is not shown, avoid exact matches unless the question explicitly gives it.
 Note: If Anchor entities are provided, prefer matching by id over name or fuzzy filters.
+Note: Return ids, names, and relevant properties to provide rich context for reasoning.
 
 Examples: Here are a few examples of generated Cypher statements for particular questions:
 
@@ -61,7 +62,7 @@ The question is:
 """
 
 CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["node_types", "node_properties", "edge_properties", "edges", "property_examples", "anchor_entities", "question",], 
+    input_variables=["node_types", "node_properties", "edge_properties", "edges", "target_context", "anchor_entities", "question",], 
     template=CYPHER_GENERATION_TEMPLATE
 )
 
@@ -95,8 +96,8 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
-Property examples (non-exhaustive, from the database):
-{property_examples}
+Target node context (properties and edges for resolved entities):
+{target_context}
 Anchor entities (high confidence, use their ids directly when possible):
 {anchor_entities}
 
@@ -154,7 +155,7 @@ The question is:
 
 
 VECTOR_SEARCH_CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "property_examples", "anchor_entities", "question",], 
+    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "target_context", "anchor_entities", "question",], 
     template=VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE
 )
 
