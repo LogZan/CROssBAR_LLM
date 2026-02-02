@@ -14,6 +14,10 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
+Property examples (non-exhaustive, from the database):
+{property_examples}
+Anchor entities (high confidence, use their ids directly when possible):
+{anchor_entities}
 Note: Do not include any explanations or apologies in your responses.
 Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
 Do not add any directionality to generated Cypher query.
@@ -23,6 +27,8 @@ Do not make uppercase, lowercase or camelcase given biological entity names in q
 Note: SmallMolecule is parent label for Drug and Compounds. If question is asking for both nodes use SmallMolecule.
 Note: You MUST start your response with MATCH. Do not use markdown blocks.
 Note: Do not use double quotes symbols in generated Cypher query (i.e., ''x'' or ""x"")
+Note: Prefer values seen in Property examples when filtering. If a value is not shown, avoid exact matches unless the question explicitly gives it.
+Note: If Anchor entities are provided, prefer matching by id over name or fuzzy filters.
 
 Examples: Here are a few examples of generated Cypher statements for particular questions:
 
@@ -55,7 +61,7 @@ The question is:
 """
 
 CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["node_types", "node_properties", "edge_properties", "edges", "question",], 
+    input_variables=["node_types", "node_properties", "edge_properties", "edges", "property_examples", "anchor_entities", "question",], 
     template=CYPHER_GENERATION_TEMPLATE
 )
 
@@ -89,6 +95,10 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
+Property examples (non-exhaustive, from the database):
+{property_examples}
+Anchor entities (high confidence, use their ids directly when possible):
+{anchor_entities}
 
 
 Here are a few examples use similar concepts when you are creating cypher queries for vector search:
@@ -144,7 +154,7 @@ The question is:
 
 
 VECTOR_SEARCH_CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "question",], 
+    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "property_examples", "anchor_entities", "question",], 
     template=VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE
 )
 

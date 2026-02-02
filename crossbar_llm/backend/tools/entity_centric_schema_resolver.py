@@ -78,25 +78,43 @@ class EntityCentricSchemaResolver:
 
                 # Step 2: Extract node schemas
                 node_schemas = []
+                anchor_entities: List[Dict] = []
                 entities = entity_info.get("entities", [])[:self.max_entities]
 
                 for entity in entities:
                     # Try to locate the node
-                    node_id = self._locate_node(entity)
-                    if not node_id:
+                    node_info = self._locate_node(entity)
+                    if not node_info:
                         logging.warning(f"Could not locate node for entity: {entity}")
                         continue
+                    node_id = node_info.get("id")
+                    node_type = node_info.get("type") or entity.get("type", "Protein")
+                    if not node_id:
+                        logging.warning(f"Located node missing id for entity: {entity}")
+                        continue
+                    anchor = {
+                        "id": node_id,
+                        "type": node_type,
+                        "identifier": entity.get("identifier"),
+                        "name": entity.get("name"),
+                        "sequence": entity.get("sequence"),
+                    }
+                    anchor_entities.append(anchor)
 
                     # Check cache first
                     cached_schema = self._load_cached_schema(node_id)
                     if cached_schema:
                         logging.info(f"Using cached schema for node: {node_id}")
-                        node_schemas.append(cached_schema)
+                        schema = dict(cached_schema)
+                        schema.setdefault("anchor_entities", []).append(anchor)
+                        node_schemas.append(schema)
                     else:
                         # Extract schema from Neo4j
-                        schema = self._extract_node_schema(node_id, entity.get("type", "Protein"))
+                        schema = self._extract_node_schema(node_id, node_type)
                         if schema:
                             self._cache_schema(node_id, schema)
+                            schema = dict(schema)
+                            schema.setdefault("anchor_entities", []).append(anchor)
                             node_schemas.append(schema)
 
                 if not node_schemas:
@@ -105,6 +123,8 @@ class EntityCentricSchemaResolver:
 
                 # Step 3: Merge schemas
                 merged_schema = self._merge_schemas(node_schemas)
+                if anchor_entities:
+                    merged_schema["anchor_entities"] = anchor_entities
                 logging.info(f"Successfully resolved entity-centric schema with {len(merged_schema.get('edges', []))} edge types")
                 return merged_schema
 
@@ -155,7 +175,7 @@ class EntityCentricSchemaResolver:
             logging.error(f"Entity identification failed: {e}")
             return None
 
-    def _locate_node(self, entity: Dict) -> Optional[str]:
+    def _locate_node(self, entity: Dict) -> Optional[Dict]:
         """
         Step 2a: Locate the specific node in the knowledge graph.
 
@@ -169,7 +189,7 @@ class EntityCentricSchemaResolver:
             entity: Entity dict with type, sequence, identifier, name
 
         Returns:
-            Node ID or None
+            Dict with node id/type or None
         """
         entity_type = entity.get("type", "Protein")
         sequence = entity.get("sequence")
@@ -178,45 +198,48 @@ class EntityCentricSchemaResolver:
 
         # Strategy 1: Exact sequence match
         if sequence:
-            node_id = self._find_node_by_sequence(sequence, entity_type)
-            if node_id:
-                return node_id
+            node_info = self._find_node_by_sequence(sequence)
+            if node_info:
+                return node_info
 
         # Strategy 2: Property match (name or identifier)
         if identifier or name:
             node_id = self._find_node_by_property(identifier or name, entity_type)
             if node_id:
-                return node_id
+                return {"id": node_id, "type": entity_type}
 
         logging.warning(f"Could not locate node for entity: {entity}")
         return None
 
-    def _find_node_by_sequence(self, sequence: str, entity_type: str = "Protein") -> Optional[str]:
+    def _find_node_by_sequence(self, sequence: str) -> Optional[Dict]:
         """
-        Find node by exact sequence match.
+        Find node by exact sequence match across all labels.
 
         Args:
             sequence: Protein sequence
-            entity_type: Node type (default: Protein)
 
         Returns:
-            Node ID or None
+            Dict with node id/type or None
         """
         try:
             # Escape single quotes in sequence
             escaped_sequence = sequence.replace("'", "\\'")
             query = f"""
-            MATCH (n:{entity_type})
+            MATCH (n)
             WHERE n.sequence = '{escaped_sequence}'
-            RETURN n.id AS node_id
+            WITH n, labels(n)[0] AS node_type
+            RETURN n.id AS node_id, node_type
+            ORDER BY CASE WHEN node_type = 'Protein' THEN 0 ELSE 1 END
             LIMIT 1
             """
             result = self.neo4j_helper.execute(query, top_k=1)
 
             if result and result != "Given cypher query did not return any result":
                 node_id = result[0].get("node_id")
-                logging.info(f"Found node by sequence: {node_id}")
-                return node_id
+                node_type = result[0].get("node_type")
+                if node_id:
+                    logging.info(f"Found node by sequence: {node_id} ({node_type})")
+                    return {"id": node_id, "type": node_type}
 
         except Exception as e:
             logging.error(f"Sequence match failed: {e}")
@@ -339,7 +362,8 @@ class EntityCentricSchemaResolver:
             "nodes": set(),
             "node_properties": [],
             "edges": [],
-            "edge_properties": []
+            "edge_properties": [],
+            "anchor_entities": [],
         }
 
         seen_node_props = set()
@@ -411,6 +435,10 @@ class EntityCentricSchemaResolver:
                         })
                         seen_edge_props.add(edge_type)
 
+            for anchor in schema.get("anchor_entities", []) or []:
+                if anchor not in merged["anchor_entities"]:
+                    merged["anchor_entities"].append(anchor)
+
         # Convert sets to lists
         merged["nodes"] = [{"labels": list(merged["nodes"])}]
 
@@ -444,7 +472,8 @@ class EntityCentricSchemaResolver:
                 "properties": [{"property": p, "type": "STRING"} for p in properties]
             }],
             "edges": [],
-            "edge_properties": []
+            "edge_properties": [],
+            "anchor_entities": node_schema.get("anchor_entities", []),
         }
 
         for neighbor_label, props in neighbor_props.items():

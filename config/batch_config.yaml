@@ -9,7 +9,7 @@ provider: "OpenRouter"  # Default provider for all models below
 # Models to test (can add/remove freely)
 # These will be auto-registered to models_config.py if not present
 models:
-  - "Qwen/Qwen3-32B"
+  # - "Qwen/Qwen3-32B"
   - "deepseek-v3-2-251201"
   # - "gemini-3-flash-preview"
   # - "gemini-3-pro-preview"
@@ -96,3 +96,17 @@ entity_centric_resolver:
   cache_ttl_hours: 24
   similarity_threshold: 0.7
   lightweight_model: "gpt-oss-120b"
+
+# =============================================================================
+# Property Context Settings (LLM context enrichment)
+# =============================================================================
+property_context:
+  enabled: true
+  cache_dir: "/GenSIvePFS/users/clzeng/workspace/CROssBAR_LLM/cache"
+  cache_ttl_hours: 24
+  max_node_labels: 200
+  max_node_properties: 200
+  max_edge_types: 400
+  max_edge_properties: 200
+  sample_per_property: 20
+  max_context_chars: 40000

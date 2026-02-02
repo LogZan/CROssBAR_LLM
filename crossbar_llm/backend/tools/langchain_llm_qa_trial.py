@@ -26,6 +26,7 @@ from .qa_templates import (
     CYPHER_OUTPUT_PARSER_PROMPT,
     VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
 )
+from .property_context_builder import PropertyContextBuilder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import Ollama, Replicate
@@ -331,6 +332,7 @@ class QueryChain:
         use_entity_centric_resolver: bool = False,
         resolver_config: dict = None,
         neo4j_helper: Neo4jGraphHelper = None,
+        property_context_config: dict = None,
     ):
 
         if search_type == "db_search":
@@ -342,6 +344,11 @@ class QueryChain:
         self.schema = schema
         self.verbose = verbose
         self.search_type = search_type
+        self.property_context_builder = (
+            PropertyContextBuilder(neo4j_helper, property_context_config or {})
+            if neo4j_helper
+            else None
+        )
 
         self.generated_queries = []
         self.last_resolution_used = False
@@ -399,6 +406,12 @@ class QueryChain:
             self.last_resolution_reason = "resolver_disabled"
 
         if self.search_type == "db_search":
+            property_examples = (
+                self.property_context_builder.build_context(self.schema)
+                if self.property_context_builder
+                else ""
+            )
+            anchor_entities = self._format_anchor_entities(schema_context)
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -406,6 +419,8 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
+                        "property_examples": property_examples,
+                        "anchor_entities": anchor_entities,
                         "question": question,
                     }
                 )
@@ -418,6 +433,12 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is None:
+            property_examples = (
+                self.property_context_builder.build_context(self.schema)
+                if self.property_context_builder
+                else ""
+            )
+            anchor_entities = self._format_anchor_entities(schema_context)
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -425,6 +446,8 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
+                        "property_examples": property_examples,
+                        "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
                     }
@@ -438,6 +461,12 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is not None:
+            property_examples = (
+                self.property_context_builder.build_context(self.schema)
+                if self.property_context_builder
+                else ""
+            )
+            anchor_entities = self._format_anchor_entities(schema_context)
 
             self.generated_query = (
                 self.cypher_chain.invoke(
@@ -446,6 +475,8 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
+                        "property_examples": property_examples,
+                        "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
                     }
@@ -479,6 +510,24 @@ class QueryChain:
         logging.info(f"Corrected Query: {corrected_query}")
 
         return corrected_query
+
+    def _format_anchor_entities(self, schema_context: dict) -> str:
+        anchors = schema_context.get("anchor_entities") or []
+        if not anchors:
+            return ""
+        lines = []
+        for anchor in anchors:
+            if not isinstance(anchor, dict):
+                continue
+            anchor_id = anchor.get("id") or anchor.get("node_id")
+            anchor_type = anchor.get("type") or anchor.get("node_type")
+            name = anchor.get("name") or anchor.get("identifier")
+            if anchor_id and anchor_type:
+                if name:
+                    lines.append(f"- {anchor_type} id={anchor_id} name={name}")
+                else:
+                    lines.append(f"- {anchor_type} id={anchor_id}")
+        return "\n".join(lines)
 
 
 class RunPipeline:
@@ -527,19 +576,25 @@ class RunPipeline:
                     with open(config_path, 'r') as f:
                         batch_config = yaml.safe_load(f)
                         resolver_settings = batch_config.get("entity_centric_resolver", {})
+                        property_context_settings = batch_config.get("property_context", {})
                         if use_entity_centric_resolver is None:
                             use_entity_centric_resolver = resolver_settings.get("enabled", False)
                         if resolver_config is None:
                             resolver_config = resolver_settings
+                        self.property_context_config = property_context_settings
                         logging.info(f"Loaded entity_centric_resolver config from {config_path}")
                 else:
                     logging.warning("batch_config.yaml not found when loading resolver config")
                     use_entity_centric_resolver = False
                     resolver_config = {}
+                    self.property_context_config = {}
             except Exception as e:
                 logging.warning(f"Failed to load resolver config from batch_config.yaml: {e}")
                 use_entity_centric_resolver = False
                 resolver_config = {}
+                self.property_context_config = {}
+        else:
+            self.property_context_config = {}
 
         self.use_entity_centric_resolver = use_entity_centric_resolver
         self.resolver_config = resolver_config
@@ -650,6 +705,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -660,6 +716,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
 
         if self.search_type == "db_search":
@@ -715,6 +772,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -725,6 +783,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
 
         final_output = query_chain.qa_chain.invoke(
@@ -764,6 +823,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
         else:
             query_chain: QueryChain = QueryChain(
@@ -774,6 +834,7 @@ class RunPipeline:
                 use_entity_centric_resolver=self.use_entity_centric_resolver,
                 resolver_config=self.resolver_config,
                 neo4j_helper=self.neo4j_connection.graph_helper,
+                property_context_config=self.property_context_config,
             )
 
         if self.search_type == "db_search":
