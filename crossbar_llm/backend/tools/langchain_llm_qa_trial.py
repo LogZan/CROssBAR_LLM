@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import threading
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -542,6 +543,11 @@ class QueryChain:
             query=self.generated_query, edge_schema=self.schema["edges"]
         )
 
+        enforced_query = self._enforce_anchor_query(corrected_query, schema_context)
+        if enforced_query != corrected_query:
+            logging.info("Anchor enforcement applied to Cypher query")
+            corrected_query = enforced_query
+
         self.generated_queries.append(corrected_query)
 
         # Logging generated and corrected queries
@@ -570,6 +576,53 @@ class QueryChain:
 
     def _format_target_context(self, schema_context: dict) -> str:
         return schema_context.get("target_node_context", "") or ""
+
+    def _enforce_anchor_query(self, query: str, schema_context: dict) -> str:
+        anchors = schema_context.get("anchor_entities") or []
+        if not anchors:
+            return query
+
+        anchor = anchors[0]
+        anchor_id = anchor.get("id")
+        anchor_type = anchor.get("type")
+        if not anchor_id or not anchor_type:
+            return query
+
+        if anchor_id in query:
+            return query
+
+        # Try to inject id into a node pattern with matching label
+        label_pattern = re.compile(rf"\\(\\s*(\\w+)\\s*:\\s*{re.escape(anchor_type)}\\s*(\\{{[^}}]*\\}})?\\s*\\)")
+        match = label_pattern.search(query)
+        if match:
+            var_name = match.group(1)
+            props = match.group(2)
+            if props:
+                if "id" in props:
+                    return query
+                injected = props[:-1] + f', id:\"{anchor_id}\"' + "}"
+            else:
+                injected = f'{{id:\"{anchor_id}\"}}'
+            replacement = f"({var_name}:{anchor_type} {injected})"
+            return query[: match.start()] + replacement + query[match.end():]
+
+        # Fallback: replace the first node pattern with anchor label + id
+        generic_pattern = re.compile(r"\\(\\s*(\\w+)(?:\\s*:\\s*(\\w+))?\\s*(\\{{[^}}]*\\}})?\\s*\\)")
+        match = generic_pattern.search(query)
+        if not match:
+            return f'MATCH (p:{anchor_type} {{id:\"{anchor_id}\"}})\\nRETURN p'
+
+        var_name = match.group(1)
+        props = match.group(3)
+        if props:
+            if "id" in props:
+                injected = props
+            else:
+                injected = props[:-1] + f', id:\"{anchor_id}\"' + "}"
+        else:
+            injected = f'{{id:\"{anchor_id}\"}}'
+        replacement = f"({var_name}:{anchor_type} {injected})"
+        return query[: match.start()] + replacement + query[match.end():]
 
 
 class RunPipeline:
