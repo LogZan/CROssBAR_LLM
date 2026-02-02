@@ -115,6 +115,15 @@ class HotReloadConfig:
     check_interval: int = 5
 
 
+@dataclass
+class MultiStepConfig:
+    """Multi-step query configuration."""
+    enabled: bool = True
+    max_steps: int = 5
+    max_failures: int = 5
+    min_results: int = 1
+
+
 class BatchConfig:
     """
     Main configuration class with hot reload support.
@@ -134,6 +143,7 @@ class BatchConfig:
         self.execution: ExecutionConfig = ExecutionConfig()
         self.output: OutputConfig = OutputConfig()
         self.hot_reload: HotReloadConfig = HotReloadConfig()
+        self.multi_step: MultiStepConfig = MultiStepConfig()
         
         self.reload()
     
@@ -197,6 +207,15 @@ class BatchConfig:
             self.hot_reload = HotReloadConfig(
                 enabled=hot_reload_data.get("enabled", True),
                 check_interval=hot_reload_data.get("check_interval", 5),
+            )
+
+            # Parse multi-step config
+            multi_step_data = data.get("multi_step", {})
+            self.multi_step = MultiStepConfig(
+                enabled=multi_step_data.get("enabled", True),
+                max_steps=multi_step_data.get("max_steps", 5),
+                max_failures=multi_step_data.get("max_failures", 5),
+                min_results=multi_step_data.get("min_results", 1),
             )
             
             self._config_hash = new_hash
@@ -334,6 +353,8 @@ class QuestionResult:
     resolver_enabled: Optional[bool] = None
     resolver_used: Optional[bool] = None
     resolver_reason: Optional[str] = None
+    # Multi-step trace
+    multi_step_trace: list = field(default_factory=list)
     
     def to_dict(self) -> dict:
         return {
@@ -355,6 +376,7 @@ class QuestionResult:
             "resolver_enabled": self.resolver_enabled,
             "resolver_used": self.resolver_used,
             "resolver_reason": self.resolver_reason,
+            "multi_step_trace": self.multi_step_trace,
         }
 
 
@@ -433,6 +455,70 @@ class BatchPipeline:
             if wait_time > 0:
                 time.sleep(wait_time)
             self._last_request_time = time.time()
+
+    def _count_results(self, result: Any) -> int:
+        if result is None:
+            return 0
+        if isinstance(result, str):
+            if "Given cypher query did not return any result" in result:
+                return 0
+            return 1 if result.strip() else 0
+        if isinstance(result, list):
+            return len(result)
+        if isinstance(result, dict):
+            return 1
+        return 0
+
+    def _is_empty_result(self, result: Any) -> bool:
+        return self._count_results(result) == 0
+
+    def _summarize_result(self, result: Any) -> str:
+        if result is None:
+            return "None"
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, list):
+            return f"list[{len(result)}]"
+        if isinstance(result, dict):
+            return "dict"
+        return str(result)
+
+    def _parse_json_response(self, text: str) -> dict:
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        try:
+            import re
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+        except Exception:
+            return {}
+        return {}
+
+    def _decompose_subquestions(self, llm, question: str) -> list:
+        from tools.qa_templates import SUBQUESTION_DECOMPOSITION_PROMPT
+        from langchain_core.output_parsers import StrOutputParser
+
+        chain = SUBQUESTION_DECOMPOSITION_PROMPT | llm | StrOutputParser()
+        raw = chain.invoke({"question": question})
+        data = self._parse_json_response(raw)
+        subqs = data.get("subquestions", [])
+        return [q for q in subqs if isinstance(q, str) and q.strip()]
+
+    def _llm_sufficient(self, llm, question: str, evidence: Any) -> bool:
+        from tools.qa_templates import ANSWER_SUFFICIENCY_PROMPT
+        from langchain_core.output_parsers import StrOutputParser
+
+        if isinstance(evidence, list):
+            snippet = json.dumps(evidence[:5], ensure_ascii=False)
+        else:
+            snippet = str(evidence)
+        chain = ANSWER_SUFFICIENCY_PROMPT | llm | StrOutputParser()
+        raw = chain.invoke({"question": question, "evidence": snippet})
+        data = self._parse_json_response(raw)
+        return bool(data.get("sufficient", False))
     
     def _execute_with_retry(
         self, 
@@ -496,71 +582,170 @@ class BatchPipeline:
         try:
             pipeline = self._get_pipeline()
             
-            # Step 1: Generate Cypher query (LLM)
-            cypher_start = time.time()
-            success, query_or_error = self._execute_with_retry(
-                pipeline.run_for_query,
-                _log_context=model_name,
-                question=question_text,
-                reset_llm_type=True,
-                model_name=model_name,
-            )
-            result.cypher_gen_time = time.time() - cypher_start
-            
-            if not success:
-                result.error = query_or_error
-                result.execution_time_seconds = time.time() - start_time
-                return result
-            
-            result.generated_query = query_or_error
+            if isinstance(pipeline.llm, dict):
+                cypher_llm = pipeline.llm["cypher_llm"]
+                qa_llm = pipeline.llm["qa_llm"]
+            else:
+                cypher_llm = pipeline.llm
+                qa_llm = pipeline.llm
 
-            resolver_status = pipeline.get_last_resolver_status()
-            result.resolver_enabled = resolver_status.get("enabled")
-            result.resolver_used = resolver_status.get("used")
-            result.resolver_reason = resolver_status.get("reason")
-            self.logger.info(
-                f"  [{model_name}] Question {question_index}: entity-centric "
-                f"enabled={result.resolver_enabled} used={result.resolver_used} "
-                f"reason={result.resolver_reason}"
-            )
-            
-            # Step 2 & 3: Execute query on Neo4j and generate answer (LLM)
-            if query_or_error and not query_or_error.startswith("Error"):
+            multi_cfg = self.config.multi_step
+            aggregated_results: list = []
+            last_cypher = None
+            last_result = None
+            failure_count = 0
+            trace = []
+            subquestions = []
+            subq_index = 0
+
+            max_steps = multi_cfg.max_steps if multi_cfg.enabled else 1
+            for step in range(1, max_steps + 1):
+                phase = "initial" if step == 1 else "followup"
+                current_question = question_text
+
+                if subquestions and subq_index < len(subquestions):
+                    phase = "subquestion"
+                    current_question = subquestions[subq_index]
+                    subq_index += 1
+                elif step > 1:
+                    current_question = (
+                        f"{question_text}\n\n"
+                        f"Previous Cypher:\n{last_cypher}\n\n"
+                        f"Previous Result Summary:\n{self._summarize_result(last_result)}\n\n"
+                        "Generate an improved Cypher query."
+                    )
+
+                cypher_start = time.time()
+                success, query_or_error = self._execute_with_retry(
+                    pipeline.run_for_query,
+                    _log_context=f"{model_name}/step{step}",
+                    question=current_question,
+                    reset_llm_type=True,
+                    model_name=model_name,
+                )
+                result.cypher_gen_time += time.time() - cypher_start
+
+                resolver_status = pipeline.get_last_resolver_status()
+                result.resolver_enabled = resolver_status.get("enabled")
+                result.resolver_used = resolver_status.get("used")
+                result.resolver_reason = resolver_status.get("reason")
+                self.logger.info(
+                    f"  [{model_name}] Question {question_index} step {step}: "
+                    f"entity-centric enabled={result.resolver_enabled} used={result.resolver_used} "
+                    f"reason={result.resolver_reason}"
+                )
+
+                if not success:
+                    failure_count += 1
+                    trace.append({
+                        "step": step,
+                        "phase": phase,
+                        "question": current_question,
+                        "cypher": None,
+                        "result_summary": str(query_or_error),
+                        "result_count": 0,
+                        "status": "error",
+                        "resolver_enabled": result.resolver_enabled,
+                        "resolver_used": result.resolver_used,
+                        "resolver_reason": result.resolver_reason,
+                    })
+                    if failure_count >= multi_cfg.max_failures:
+                        result.error = query_or_error
+                        break
+                    if not subquestions:
+                        subquestions = self._decompose_subquestions(cypher_llm, question_text)
+                        subq_index = 0
+                    continue
+
+                query = query_or_error
+                result.generated_query = query
+                last_cypher = query
+
                 try:
-                    # Neo4j query execution
                     neo4j_start = time.time()
                     query_result = pipeline.neo4j_connection.execute_query(
-                        query_or_error, 
+                        query,
                         top_k=pipeline.top_k
                     )
-                    result.neo4j_query_time = time.time() - neo4j_start
-                    result.query_result = query_result
-                    
-                    # LLM answer generation
-                    answer_start = time.time()
-                    if isinstance(pipeline.llm, dict):
-                        qa_llm = pipeline.llm["qa_llm"]
-                    else:
-                        qa_llm = pipeline.llm
-                    
-                    # Use the QA chain to generate answer
-                    from tools.qa_templates import CYPHER_OUTPUT_PARSER_PROMPT
-                    from langchain_core.output_parsers import StrOutputParser
-                    
-                    qa_chain = CYPHER_OUTPUT_PARSER_PROMPT | qa_llm | StrOutputParser()
-                    answer = qa_chain.invoke({
-                        "output": query_result,
-                        "input_question": question_text,
-                    }).strip("\n")
-                    result.answer_gen_time = time.time() - answer_start
-                    
-                    result.natural_language_answer = answer
-                    result.success = True
-                    
+                    result.neo4j_query_time += time.time() - neo4j_start
                 except Exception as e:
-                    result.error = f"Query execution error: {str(e)}"
-            else:
-                result.success = True  # Query generation successful, even if query is invalid
+                    failure_count += 1
+                    trace.append({
+                        "step": step,
+                        "phase": phase,
+                        "question": current_question,
+                        "cypher": query,
+                        "result_summary": f"Query execution error: {e}",
+                        "result_count": 0,
+                        "status": "error",
+                        "resolver_enabled": result.resolver_enabled,
+                        "resolver_used": result.resolver_used,
+                        "resolver_reason": result.resolver_reason,
+                    })
+                    if failure_count >= multi_cfg.max_failures:
+                        result.error = f"Query execution error: {e}"
+                        break
+                    if not subquestions:
+                        subquestions = self._decompose_subquestions(cypher_llm, question_text)
+                        subq_index = 0
+                    continue
+
+                last_result = query_result
+                count = self._count_results(query_result)
+                status = "ok" if count >= 1 else "empty"
+                if count == 0:
+                    failure_count += 1
+
+                if count >= 1:
+                    if isinstance(query_result, list):
+                        aggregated_results.extend(query_result)
+                    elif isinstance(query_result, dict):
+                        aggregated_results.append(query_result)
+                    else:
+                        aggregated_results.append({"result": query_result})
+
+                trace.append({
+                    "step": step,
+                    "phase": phase,
+                    "question": current_question,
+                    "cypher": query,
+                    "result_summary": self._summarize_result(query_result),
+                    "result_count": count,
+                    "status": status,
+                    "resolver_enabled": result.resolver_enabled,
+                    "resolver_used": result.resolver_used,
+                    "resolver_reason": result.resolver_reason,
+                })
+
+                if count >= multi_cfg.min_results:
+                    break
+                if failure_count >= multi_cfg.max_failures:
+                    break
+                if aggregated_results and self._llm_sufficient(cypher_llm, question_text, aggregated_results):
+                    break
+                if count == 0 and not subquestions:
+                    subquestions = self._decompose_subquestions(cypher_llm, question_text)
+                    subq_index = 0
+
+            result.multi_step_trace = trace
+            result.query_result = aggregated_results if aggregated_results else last_result
+
+            try:
+                answer_start = time.time()
+                from tools.qa_templates import CYPHER_OUTPUT_PARSER_PROMPT
+                from langchain_core.output_parsers import StrOutputParser
+
+                qa_chain = CYPHER_OUTPUT_PARSER_PROMPT | qa_llm | StrOutputParser()
+                final_output = aggregated_results if aggregated_results else "Given cypher query did not return any result"
+                answer = qa_chain.invoke({
+                    "output": final_output,
+                    "input_question": question_text,
+                }).strip("\n")
+                result.answer_gen_time += time.time() - answer_start
+                result.natural_language_answer = answer
+                result.success = True
+            except Exception as e:
+                result.error = f"Answer generation error: {str(e)}"
             
         except Exception as e:
             result.error = str(e)

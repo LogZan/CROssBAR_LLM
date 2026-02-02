@@ -71,6 +71,7 @@ class ResultComparator:
                         "answer_gen_time": q.get("answer_gen_time", 0),
                         "success": q.get("success", False),
                         "error": q.get("error"),
+                        "multi_step_trace": q.get("multi_step_trace", []),
                     }
                     break
         
@@ -217,6 +218,24 @@ class ResultComparator:
                 answer_time = result.get("answer_gen_time", 0)
                 lines.append(f"\n**{model_name}** (Answer Gen: {answer_time:.1f}s):")
                 lines.append(f"> {answer}")
+
+            lines.append("\n#### Multi-step Trace")
+            for model_name, result in comp["models"].items():
+                lines.append(f"\n**{model_name}**")
+                trace = result.get("multi_step_trace", [])
+                if not trace:
+                    lines.append("> N/A")
+                    continue
+                for step in trace:
+                    lines.append(
+                        f"> Step {step.get('step')}: {step.get('phase')} "
+                        f"status={step.get('status')} "
+                        f"results={step.get('result_count')} "
+                        f"resolver_used={step.get('resolver_used')} "
+                        f"reason={step.get('resolver_reason')}"
+                    )
+                    cypher = step.get("cypher") or "N/A"
+                    lines.append(f"```cypher\n{cypher}\n```")
         
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

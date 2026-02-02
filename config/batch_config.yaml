@@ -29,7 +29,7 @@ questions:
   # Option 2: Load from Benchmark file
   benchmark:
     enabled: true
-    file: "Benchmark/v0119filtered.small.jsonl"
+    file: "Benchmark/v0119filtered.small.test.jsonl"
     # Select questions by index (1-based) or question_id
     # Leave both empty to test ALL questions
     indices: []  # Test with first question only
@@ -51,6 +51,15 @@ execution:
     max_attempts: 3
     backoff_factor: 2.0  # Exponential backoff multiplier
     initial_delay: 1.0  # Initial delay in seconds
+
+# =============================================================================
+# Multi-step Query Settings
+# =============================================================================
+multi_step:
+  enabled: true
+  max_steps: 5
+  max_failures: 5
+  min_results: 1
 
 # =============================================================================
 # Output Settings

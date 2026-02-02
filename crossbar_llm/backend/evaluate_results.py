@@ -244,6 +244,24 @@ def render_results_by_question(
             answer = result.get("natural_language_answer") or "N/A"
             lines.append(f"> {answer}")
 
+        lines.append("\n#### Multi-step Trace")
+        for model_name, result in comp["models"].items():
+            lines.append(f"\n**{model_name}**")
+            trace = result.get("multi_step_trace", [])
+            if not trace:
+                lines.append("> N/A")
+                continue
+            for step in trace:
+                lines.append(
+                    f"> Step {step.get('step')}: {step.get('phase')} "
+                    f"status={step.get('status')} "
+                    f"results={step.get('result_count')} "
+                    f"resolver_used={step.get('resolver_used')} "
+                    f"reason={step.get('resolver_reason')}"
+                )
+                cypher = step.get("cypher") or "N/A"
+                lines.append(f"```cypher\n{cypher}\n```")
+
         lines.append("\n#### Judge")
         for model_name, result in comp["models"].items():
             judge = result.get("judge") or {}

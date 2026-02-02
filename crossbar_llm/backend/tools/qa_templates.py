@@ -309,3 +309,39 @@ QUESTION_GENERATOR_PROMPT = PromptTemplate(
     input_variables=["node_types", "node_properties", "edge_properties", "edges", "question"], 
     template=QUESTION_GENERATOR_TEMPLATE
 )
+
+
+SUBQUESTION_DECOMPOSITION_TEMPLATE = """Task: Decompose the question into 2-4 concise sub-questions suitable for KG querying.
+Instructions:
+- Only output JSON, no markdown.
+- Use the same domain terminology as the question.
+Return exactly:
+{{"subquestions": ["...","..."]}}
+
+Question:
+{question}
+"""
+
+SUBQUESTION_DECOMPOSITION_PROMPT = PromptTemplate(
+    input_variables=["question"],
+    template=SUBQUESTION_DECOMPOSITION_TEMPLATE
+)
+
+
+ANSWER_SUFFICIENCY_TEMPLATE = """Task: Decide if the evidence is sufficient to answer the question.
+Instructions:
+- Only output JSON, no markdown.
+Return exactly:
+{{"sufficient": true/false, "reason": "..."}}
+
+Question:
+{question}
+
+Evidence (may be partial):
+{evidence}
+"""
+
+ANSWER_SUFFICIENCY_PROMPT = PromptTemplate(
+    input_variables=["question", "evidence"],
+    template=ANSWER_SUFFICIENCY_TEMPLATE
+)
