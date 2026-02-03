@@ -18,6 +18,22 @@ Target node context (properties and edges for resolved entities):
 {target_context}
 Anchor entities (high confidence, use their ids directly when possible):
 {anchor_entities}
+Evidence plan:
+- Write the evidence plan as Cypher comments using `//` so the query remains valid.
+- Before writing Cypher, list 3–6 evidence items you will retrieve.
+- Each item must be a property/edge shown in Target node context.
+- Use this format:
+  - node:<Label>.<property>
+  - edge:<RELATIONSHIP>.<property> (if applicable)
+- Do not invent properties or edges.
+Evidence plan:
+- Write the evidence plan as Cypher comments using `//` so the query remains valid.
+- Before writing Cypher, list 3–6 evidence items you will retrieve.
+- Each item must be a property/edge shown in Target node context.
+- Use this format:
+  - node:<Label>.<property>
+  - edge:<RELATIONSHIP>.<property> (if applicable)
+- Do not invent properties or edges.
 Note: Do not include any explanations or apologies in your responses.
 Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
 Do not add any directionality to generated Cypher query.
@@ -30,6 +46,22 @@ Note: Do not use double quotes symbols in generated Cypher query (i.e., ''x'' or
 Note: Prefer properties and edges shown in Target node context. If a value or property is not shown, avoid exact matches unless the question explicitly gives it.
 Note: If Anchor entities are provided, prefer matching by id over name or fuzzy filters.
 Note: Return ids, names, and relevant properties to provide rich context for reasoning.
+Relevance rule:
+- Do not return a single property.
+- For classification questions, return:
+  (1) entity id + name
+  (2) the classification property
+  (3) one supporting evidence property (e.g., EC number, GO term, keyword)
+Coverage target:
+- Aim to return 4–8 fields total, prioritizing relevance.
+Relevance rule:
+- Do not return a single property.
+- For classification questions, return:
+  (1) entity id + name
+  (2) the classification property
+  (3) one supporting evidence property (e.g., EC number, GO term, keyword)
+Coverage target:
+- Aim to return 4–8 fields total, prioritizing relevance.
 
 Examples: Here are a few examples of generated Cypher statements for particular questions:
 
