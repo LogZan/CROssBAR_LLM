@@ -789,6 +789,31 @@ class BatchPipeline:
         except Exception as e:
             result.error = str(e)
             self.logger.error(f"Error processing question {question_index}: {e}")
+
+        # Verbose per-question summary for terminal visibility
+        try:
+            self.logger.info("============================================================")
+            self.logger.info(f"Question {question_index} (ID: {question_id})")
+            self.logger.info(f"Question: {question_text}")
+            if result.benchmark_output:
+                self.logger.info(f"Expected Output: {result.benchmark_output}")
+            if result.benchmark_rationale:
+                self.logger.info(f"Rationale: {result.benchmark_rationale}")
+            if result.generated_query:
+                self.logger.info("Generated Cypher:")
+                self.logger.info(result.generated_query)
+            if result.query_result is not None:
+                try:
+                    self.logger.info("Query Result:")
+                    self.logger.info(json.dumps(result.query_result, ensure_ascii=False, indent=2))
+                except Exception:
+                    self.logger.info(f"Query Result: {result.query_result}")
+            if result.natural_language_answer:
+                self.logger.info("LLM Answer:")
+                self.logger.info(result.natural_language_answer)
+            self.logger.info("============================================================")
+        except Exception:
+            pass
         
         result.execution_time_seconds = time.time() - start_time
         return result

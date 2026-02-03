@@ -50,6 +50,15 @@ if [ -n "$LATEST_RUN" ]; then
     echo ""
     
     python evaluate_results.py --run-dir "$LATEST_RUN"
+    
+    if [ -f "$LATEST_RUN/results_by_question.md" ]; then
+        echo ""
+        echo "=============================================="
+        echo "  Results by Question (with Judge)"
+        echo "=============================================="
+        echo ""
+        cat "$LATEST_RUN/results_by_question.md"
+    fi
 
     if [ -f "$LATEST_RUN/results_summary.json" ]; then
         echo ""
