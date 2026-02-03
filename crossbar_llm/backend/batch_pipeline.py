@@ -52,6 +52,7 @@ def setup_logging(log_dir: Path, verbose: bool = False) -> logging.Logger:
     
     logger = logging.getLogger("batch_pipeline")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    logger.propagate = False
     
     # File handler
     log_file = log_dir / f"batch_run_{datetime.now(SHANGHAI_TZ).strftime('%Y%m%d_%H%M%S')}.log"
@@ -795,10 +796,6 @@ class BatchPipeline:
             self.logger.info("============================================================")
             self.logger.info(f"Question {question_index} (ID: {question_id})")
             self.logger.info(f"Question: {question_text}")
-            if result.benchmark_output:
-                self.logger.info(f"Expected Output: {result.benchmark_output}")
-            if result.benchmark_rationale:
-                self.logger.info(f"Rationale: {result.benchmark_rationale}")
             if result.generated_query:
                 self.logger.info("Generated Cypher:")
                 self.logger.info(result.generated_query)
@@ -811,6 +808,10 @@ class BatchPipeline:
             if result.natural_language_answer:
                 self.logger.info("LLM Answer:")
                 self.logger.info(result.natural_language_answer)
+            if result.benchmark_output:
+                self.logger.info(f"Expected Output: {result.benchmark_output}")
+            if result.benchmark_rationale:
+                self.logger.info(f"Rationale: {result.benchmark_rationale}")
             self.logger.info("============================================================")
         except Exception:
             pass

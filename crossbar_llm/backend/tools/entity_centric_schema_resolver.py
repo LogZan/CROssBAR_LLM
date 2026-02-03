@@ -293,55 +293,84 @@ class EntityCentricSchemaResolver:
         try:
             # Escape single quotes in node_id
             escaped_node_id = node_id.replace("'", "\\'")
-            query = f"""
+            non_empty_check = "v IS NOT NULL AND toString(v) <> '' AND toString(v) <> '[]' AND toString(v) <> '{}' "
+            node_query = f"""
             MATCH (n:{node_type} {{id: '{escaped_node_id}'}})
-            WITH n, keys(n) AS properties
-            OPTIONAL MATCH (n)-[r_out]->(m_out)
-            WITH n, properties,
-                 collect(DISTINCT {{
-                     type: type(r_out),
-                     target: labels(m_out)[0],
-                     properties: keys(r_out)
-                 }}) AS out_edges
-            OPTIONAL MATCH (n)<-[r_in]-(m_in)
-            WITH n, properties, out_edges,
-                 collect(DISTINCT {{
-                     type: type(r_in),
-                     source: labels(m_in)[0],
-                     properties: keys(r_in)
-                 }}) AS in_edges
-            RETURN {{
-                node_id: n.id,
-                node_type: labels(n)[0],
-                properties: properties,
-                edges: out_edges + in_edges
-            }} AS schema
+            WITH n, keys(n) AS props
+            UNWIND props AS p
+            WITH n, p, n[p] AS v
+            WHERE {non_empty_check}
+            RETURN collect(DISTINCT p) AS non_null_props,
+                   collect(DISTINCT CASE
+                     WHEN toLower(p) CONTAINS 'name'
+                       OR toLower(p) CONTAINS 'label'
+                       OR toLower(p) CONTAINS 'symbol'
+                     THEN {{key: p, value: v}}
+                     ELSE NULL
+                   END) AS name_like
             """
+            node_result = self.neo4j_helper.execute(node_query, top_k=200)
 
-            result = self.neo4j_helper.execute(query, top_k=1)
+            if not node_result or node_result == "Given cypher query did not return any result":
+                return None
 
-            if result and result != "Given cypher query did not return any result":
-                schema = result[0].get("schema")
-                neighbor_query = f"""
-                MATCH (n:{node_type} {{id: '{escaped_node_id}'}})--(m)
-                WITH labels(m)[0] AS label, keys(m) AS props
-                UNWIND props AS prop
-                RETURN label, collect(DISTINCT prop) AS properties
-                """
-                neighbor_result = self.neo4j_helper.execute(neighbor_query, top_k=200)
-                neighbor_props = {}
-                if neighbor_result and neighbor_result != "Given cypher query did not return any result":
-                    for row in neighbor_result:
-                        label = row.get("label")
-                        props = row.get("properties") or []
-                        if label:
-                            neighbor_props[label] = sorted(set(props))
-                schema["neighbor_node_properties"] = neighbor_props
-                logging.info(
-                    f"Extracted schema for node {node_id}: {len(schema.get('edges', []))} edges, "
-                    f"{len(neighbor_props)} neighbor types"
-                )
-                return schema
+            non_null_props = node_result[0].get("non_null_props") or []
+            name_like = [x for x in (node_result[0].get("name_like") or []) if x]
+
+            edge_query = f"""
+            MATCH (n:{node_type} {{id: '{escaped_node_id}'}})-[r]-()
+            WITH type(r) AS rel_type, keys(r) AS props, r
+            UNWIND props AS p
+            WITH rel_type, p, r[p] AS v
+            WHERE {non_empty_check}
+            RETURN rel_type, collect(DISTINCT p) AS non_null_props
+            """
+            edge_result = self.neo4j_helper.execute(edge_query, top_k=500)
+            edges = []
+            if edge_result and edge_result != "Given cypher query did not return any result":
+                for row in edge_result:
+                    rel_type = row.get("rel_type")
+                    props = row.get("non_null_props") or []
+                    if rel_type:
+                        edges.append({
+                            "type": rel_type,
+                            "properties": sorted(set(props)),
+                        })
+
+            neighbor_query = f"""
+            MATCH (n:{node_type} {{id: '{escaped_node_id}'}})--(m)
+            WITH labels(m)[0] AS label, keys(m) AS props, m
+            UNWIND props AS prop
+            WITH label, prop, m[prop] AS v
+            WHERE {non_empty_check}
+            RETURN label, collect(DISTINCT prop) AS properties
+            """
+            neighbor_result = self.neo4j_helper.execute(neighbor_query, top_k=500)
+            neighbor_props = {}
+            if neighbor_result and neighbor_result != "Given cypher query did not return any result":
+                for row in neighbor_result:
+                    label = row.get("label")
+                    props = row.get("properties") or []
+                    if label:
+                        neighbor_props[label] = sorted(set(props))
+
+            schema = {
+                "node_id": node_id,
+                "node_type": node_type,
+                "properties": sorted(set(non_null_props)),
+                "edges": edges,
+                "neighbor_node_properties": neighbor_props,
+                "core_values": {
+                    "id": node_id,
+                    "name_like": name_like,
+                },
+            }
+
+            logging.info(
+                f"Extracted schema for node {node_id}: {len(schema.get('edges', []))} edges, "
+                f"{len(neighbor_props)} neighbor types"
+            )
+            return schema
 
         except Exception as e:
             logging.error(f"Schema extraction failed for node {node_id}: {e}")
@@ -531,6 +560,16 @@ class EntityCentricSchemaResolver:
         lines = []
         lines.append(f"Target node: {node_type} id={node_id}")
 
+        core_values = schema.get("core_values", {})
+        name_like = core_values.get("name_like") or []
+        if name_like:
+            lines.append("Target node name-like values:")
+            for item in name_like:
+                key = item.get("key")
+                value = item.get("value")
+                if key and value is not None:
+                    lines.append(f"- {key}: {value}")
+
         props = schema.get("properties", []) or []
         if props:
             lines.append("Node properties:")
@@ -541,17 +580,15 @@ class EntityCentricSchemaResolver:
             lines.append("Edges:")
             for edge in edges:
                 edge_type = edge.get("type")
-                source = edge.get("source")
-                target = edge.get("target")
                 edge_props = edge.get("properties") or []
-                if source:
-                    edge_str = f"(:{source})-[:{edge_type}]->(:{node_type})"
-                elif target:
-                    edge_str = f"(:{node_type})-[:{edge_type}]->(:{target})"
-                else:
-                    edge_str = f"[:{edge_type}]"
+                edge_str = f"[:{edge_type}]"
                 if edge_props:
                     lines.append(f"- {edge_str} props={sorted(edge_props)}")
+                    desc_props = [p for p in edge_props if self._is_desc_property(p)]
+                    if desc_props:
+                        desc_values = self._edge_desc_samples(node_type, node_id, edge_type, desc_props)
+                        if desc_values:
+                            lines.append(f"  desc_values={desc_values}")
                 else:
                     lines.append(f"- {edge_str}")
 
@@ -563,6 +600,28 @@ class EntityCentricSchemaResolver:
                     lines.append(f"- {label}: {sorted(props)}")
 
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _is_desc_property(prop_name: str) -> bool:
+        name = prop_name.lower()
+        return "desc" in name or "comment" in name or "annotation" in name
+
+    def _edge_desc_samples(self, node_type: str, node_id: str, edge_type: str, desc_props: list[str]) -> dict:
+        escaped_node_id = node_id.replace("'", "\\'")
+        samples = {}
+        for prop in desc_props:
+            query = f"""
+            MATCH (n:{node_type} {{id: '{escaped_node_id}'}})-[r:{edge_type}]-()
+            WHERE r.{prop} IS NOT NULL AND toString(r.{prop}) <> '' AND toString(r.{prop}) <> '[]' AND toString(r.{prop}) <> '{{}}'
+            RETURN r.{prop} AS v
+            LIMIT 3
+            """
+            result = self.neo4j_helper.execute(query, top_k=3)
+            if result and result != "Given cypher query did not return any result":
+                values = [row.get("v") for row in result if isinstance(row, dict)]
+                if values:
+                    samples[prop] = values
+        return samples
 
     def _cache_schema(self, node_id: str, schema: Dict) -> None:
         """
