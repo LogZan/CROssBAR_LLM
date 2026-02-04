@@ -14,8 +14,8 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
-Target node context (properties and edges for resolved entities):
-{target_context}
+Resolved schema (JSON for the specific target entity):
+{resolved_schema}
 Anchor entities (high confidence, use their ids directly when possible):
 {anchor_entities}
 Evidence plan:
@@ -107,7 +107,7 @@ The question is:
 """
 
 CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["node_types", "node_properties", "edge_properties", "edges", "target_context", "anchor_entities", "question",], 
+    input_variables=["node_types", "node_properties", "edge_properties", "edges", "resolved_schema", "anchor_entities", "question",], 
     template=CYPHER_GENERATION_TEMPLATE
 )
 
@@ -141,8 +141,8 @@ Relationship properties:
 {edge_properties}
 Relationships:
 {edges}
-Target node context (properties and edges for resolved entities):
-{target_context}
+Resolved schema (JSON for the specific target entity):
+{resolved_schema}
 Anchor entities (high confidence, use their ids directly when possible):
 {anchor_entities}
 
@@ -200,7 +200,7 @@ The question is:
 
 
 VECTOR_SEARCH_CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "target_context", "anchor_entities", "question",], 
+    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "resolved_schema", "anchor_entities", "question",], 
     template=VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE
 )
 

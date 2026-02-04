@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -424,14 +425,14 @@ class QueryChain:
             self.last_resolution_reason = "resolver_disabled"
 
         if self.search_type == "db_search":
-            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
             prompt_text = CYPHER_GENERATION_PROMPT.format(
                 node_types=schema_context["nodes"],
                 node_properties=schema_context["node_properties"],
                 edge_properties=schema_context["edge_properties"],
                 edges=schema_context["edges"],
-                target_context=target_context,
+                resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=question,
             )
@@ -443,7 +444,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "target_context": target_context,
+                        "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": question,
                     }
@@ -460,15 +461,15 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is None:
-            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
                 node_types=schema_context["nodes"],
                 node_properties=schema_context["node_properties"],
                 edge_properties=schema_context["edge_properties"],
                 edges=schema_context["edges"],
-                target_context=target_context,
+                resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=question,
             )
@@ -480,7 +481,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "target_context": target_context,
+                        "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
@@ -498,15 +499,15 @@ class QueryChain:
             )
 
         elif self.search_type == "vector_search" and embedding is not None:
-            target_context = self._format_target_context(schema_context)
             anchor_entities = self._format_anchor_entities(schema_context)
+            resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
                 node_types=schema_context["nodes"],
                 node_properties=schema_context["node_properties"],
                 edge_properties=schema_context["edge_properties"],
                 edges=schema_context["edges"],
-                target_context=target_context,
+                resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=question,
             )
@@ -519,7 +520,7 @@ class QueryChain:
                         "node_properties": schema_context["node_properties"],
                         "edge_properties": schema_context["edge_properties"],
                         "edges": schema_context["edges"],
-                        "target_context": target_context,
+                        "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": question,
                         "vector_index": vector_index,
@@ -583,19 +584,17 @@ class QueryChain:
                     lines.append(f"- {anchor_type} id={anchor_id}")
         return "\n".join(lines)
 
-    def _format_target_context(self, schema_context: dict) -> str:
-        return schema_context.get("target_node_context", "") or ""
-
     def _validate_or_retry_query(self, query: str, schema_context: dict, prompt_text: str, question: str) -> str:
         invalid = self._find_invalid_headers(query, schema_context)
         if not invalid:
             return query
 
         logging.warning(f"Invalid headers detected: {invalid}")
+        resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
         retry_prompt = (
             f"{prompt_text}\n\n"
-            f"Your previous query used headers not present in Target node context: {sorted(invalid)}.\n"
-            "Regenerate using only allowed headers from Target node context and schema."
+            f"Your previous query used headers not present in the resolved schema: {sorted(invalid)}.\n"
+            "Regenerate using only allowed headers from the resolved schema."
         )
         self.last_cypher_prompt_tokens = _count_tokens(retry_prompt)
         retry_query = (
@@ -605,7 +604,7 @@ class QueryChain:
                     "node_properties": schema_context["node_properties"],
                     "edge_properties": schema_context["edge_properties"],
                     "edges": schema_context["edges"],
-                    "target_context": self._format_target_context(schema_context),
+                    "resolved_schema": resolved_schema,
                     "anchor_entities": self._format_anchor_entities(schema_context),
                     "question": question,
                 }

@@ -112,15 +112,12 @@ class EntityCentricSchemaResolver:
                     if cached_schema:
                         logging.info(f"Using cached schema for node: {node_id}")
                         schema = dict(cached_schema)
-                        if "target_node_context" not in schema:
-                            schema["target_node_context"] = self._build_target_context(schema, node_id, node_type)
                         schema.setdefault("anchor_entities", []).append(anchor)
                         node_schemas.append(schema)
                     else:
                         # Extract schema from Neo4j
                         schema = self._extract_node_schema(node_id, node_type)
                         if schema:
-                            schema["target_node_context"] = self._build_target_context(schema, node_id, node_type)
                             self._cache_schema(node_id, schema)
                             schema = dict(schema)
                             schema.setdefault("anchor_entities", []).append(anchor)
@@ -596,7 +593,7 @@ class EntityCentricSchemaResolver:
             "edges": [],
             "edge_properties": [],
             "anchor_entities": node_schema.get("anchor_entities", []),
-            "target_node_context": node_schema.get("target_node_context", ""),
+            "target_node_context": "",
         }
 
         for neighbor_label, props in neighbor_props.items():
@@ -638,67 +635,6 @@ class EntityCentricSchemaResolver:
 
         return schema
 
-    def _build_target_context(self, schema: Dict, node_id: str, node_type: str) -> str:
-        lines = []
-        lines.append(f"Target node: {node_type} id={node_id}")
-
-        core_values = schema.get("core_values", {})
-        node_values = core_values.get("node", {}) or {}
-        name_like = node_values.get("name_like") or []
-        if name_like:
-            lines.append("Target node name-like values:")
-            for item in name_like:
-                key = item.get("key")
-                value = item.get("value")
-                if key and value is not None:
-                    lines.append(f"- {key}: {value}")
-
-        props = schema.get("properties", []) or []
-        if props:
-            lines.append("Node properties:")
-            lines.append(", ".join(sorted(props)))
-
-        edges = schema.get("edges", []) or []
-        if edges:
-            lines.append("Edges:")
-            for edge in edges:
-                edge_type = edge.get("type")
-                edge_props = edge.get("properties") or []
-                edge_str = f"[:{edge_type}]"
-                if edge_props:
-                    lines.append(f"- {edge_str} props={sorted(edge_props)}")
-                    lines.append("  Use as: r.<edge_property> (not node properties)")
-                    desc_props = [p for p in edge_props if self._is_desc_property(p)]
-                    if desc_props:
-                        desc_values = self._edge_desc_samples(node_type, node_id, edge_type, desc_props)
-                        if desc_values:
-                            core_values.setdefault("edges", {})
-                            core_values["edges"][edge_type] = desc_values
-                            lines.append(f"  desc_values={desc_values}")
-                else:
-                    lines.append(f"- {edge_str}")
-
-        neighbor_props = schema.get("neighbor_node_properties", {}) or {}
-        if neighbor_props:
-            lines.append("Neighbor node properties:")
-            for label, props in sorted(neighbor_props.items()):
-                if props:
-                    lines.append(f"- {label}: {sorted(props)}")
-
-        neighbor_core = core_values.get("neighbors", {}) or {}
-        if neighbor_core:
-            lines.append("Neighbor node name-like values:")
-            for label, items in sorted(neighbor_core.items()):
-                values = []
-                for item in items:
-                    key = item.get("key")
-                    value = item.get("value")
-                    if key and value is not None:
-                        values.append(f"{key}: {value}")
-                if values:
-                    lines.append(f"- {label}: {values}")
-
-        return "\n".join(lines).strip()
 
     @staticmethod
     def _is_desc_property(prop_name: str) -> bool:
