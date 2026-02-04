@@ -57,7 +57,8 @@ Coverage target:
 Edge guidance:
 - When a relationship is used, return 1–2 relevant edge properties (if available in schema).
 Schema compliance:
-- Do not use any property/relationship headers that are not present in the provided schema or target context.
+- Use ONLY property/relationship headers that are explicitly present in the provided schema or target context.
+- If a header is not listed there, it must not appear in the Cypher.
 Edge guidance:
 - When a relationship is used, return 1–2 relevant edge properties (if available in schema).
 Schema compliance:

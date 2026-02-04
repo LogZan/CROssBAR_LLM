@@ -455,6 +455,9 @@ class QueryChain:
                 .replace("''", "'")
                 .replace('""', '"')
             )
+            self.generated_query = self._validate_or_retry_query(
+                self.generated_query, schema_context, prompt_text, question
+            )
 
         elif self.search_type == "vector_search" and embedding is None:
             target_context = self._format_target_context(schema_context)
@@ -489,6 +492,9 @@ class QueryChain:
                 .strip("`")
                 .replace("''", "'")
                 .replace('""', '"')
+            )
+            self.generated_query = self._validate_or_retry_query(
+                self.generated_query, schema_context, prompt_text, question
             )
 
         elif self.search_type == "vector_search" and embedding is not None:
@@ -525,6 +531,9 @@ class QueryChain:
                 .strip("`")
                 .replace("''", "'")
                 .replace('""', '"')
+            )
+            self.generated_query = self._validate_or_retry_query(
+                self.generated_query, schema_context, prompt_text, question
             )
 
             self.generated_query = self.generated_query.format(user_input=embedding)
@@ -576,6 +585,66 @@ class QueryChain:
 
     def _format_target_context(self, schema_context: dict) -> str:
         return schema_context.get("target_node_context", "") or ""
+
+    def _validate_or_retry_query(self, query: str, schema_context: dict, prompt_text: str, question: str) -> str:
+        invalid = self._find_invalid_headers(query, schema_context)
+        if not invalid:
+            return query
+
+        logging.warning(f"Invalid headers detected: {invalid}")
+        retry_prompt = (
+            f"{prompt_text}\n\n"
+            f"Your previous query used headers not present in Target node context: {sorted(invalid)}.\n"
+            "Regenerate using only allowed headers from Target node context and schema."
+        )
+        self.last_cypher_prompt_tokens = _count_tokens(retry_prompt)
+        retry_query = (
+            self.cypher_chain.invoke(
+                {
+                    "node_types": schema_context["nodes"],
+                    "node_properties": schema_context["node_properties"],
+                    "edge_properties": schema_context["edge_properties"],
+                    "edges": schema_context["edges"],
+                    "target_context": self._format_target_context(schema_context),
+                    "anchor_entities": self._format_anchor_entities(schema_context),
+                    "question": question,
+                }
+            )
+            .strip()
+            .strip("\n")
+            .replace("cypher", "")
+            .strip("`")
+        )
+        invalid_retry = self._find_invalid_headers(retry_query, schema_context)
+        if invalid_retry:
+            logging.warning(f"Retry still has invalid headers: {invalid_retry}")
+        return retry_query
+
+    def _find_invalid_headers(self, query: str, schema_context: dict) -> set[str]:
+        allowed = self._build_allowed_headers(schema_context)
+        used = self._extract_used_headers(query)
+        return {h for h in used if h not in allowed}
+
+    def _build_allowed_headers(self, schema_context: dict) -> set[str]:
+        allowed = set()
+        for entry in schema_context.get("node_properties", []) or []:
+            for prop in entry.get("properties", []) or []:
+                prop_name = prop.get("property") if isinstance(prop, dict) else prop
+                if prop_name:
+                    allowed.add(prop_name)
+        for entry in schema_context.get("edge_properties", []) or []:
+            for prop in entry.get("properties", []) or []:
+                prop_name = prop.get("property") if isinstance(prop, dict) else prop
+                if prop_name:
+                    allowed.add(prop_name)
+        return allowed
+
+    @staticmethod
+    def _extract_used_headers(query: str) -> set[str]:
+        used = set()
+        for match in re.finditer(r"\\b\\w+\\.([A-Za-z_][A-Za-z0-9_]*)\\b", query):
+            used.add(match.group(1))
+        return used
 
     def _enforce_anchor_query(self, query: str, schema_context: dict) -> str:
         anchors = schema_context.get("anchor_entities") or []
