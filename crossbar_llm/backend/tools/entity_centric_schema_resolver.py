@@ -56,6 +56,7 @@ class EntityCentricSchemaResolver:
             "/GenSIvePFS/users/clzeng/workspace/CROssBARv2-KG/config/schema_config.yaml",
         )
         self.label_hierarchy, self.label_aliases = self._load_label_hierarchy(self.schema_config_path)
+        self.last_failure_reason = None
 
         # Ensure cache directory exists
         self.entity_cache_dir = self.cache_dir / "entity_schema_cache"
@@ -74,18 +75,31 @@ class EntityCentricSchemaResolver:
         Returns:
             Filtered schema dict or None (triggers fallback to full schema)
         """
+        self.last_failure_reason = None
         for attempt in range(max_retries):
             try:
                 # Step 1: Identify entities
                 entity_info = self._identify_entity(question)
-                if not entity_info or entity_info.get("confidence", 0) < 0.5:
-                    logging.info("Entity identification failed or low confidence, using full schema")
+                if not entity_info:
+                    self.last_failure_reason = "identify_none"
+                    logging.info("Entity identification returned None, using full schema")
+                    return None
+                confidence = entity_info.get("confidence", 0)
+                entities = entity_info.get("entities", []) or []
+                logging.info(f"Entity identification confidence={confidence} entities={len(entities)}")
+                if confidence < 0.5:
+                    self.last_failure_reason = "identify_low_confidence"
+                    logging.info("Entity identification low confidence, using full schema")
+                    return None
+                if not entities:
+                    self.last_failure_reason = "identify_no_entities"
+                    logging.info("Entity identification returned no entities, using full schema")
                     return None
 
                 # Step 2: Extract node schemas
                 node_schemas = []
                 anchor_entities: List[Dict] = []
-                entities = entity_info.get("entities", [])[:self.max_entities]
+                entities = entities[:self.max_entities]
 
                 for entity in entities:
                     # Try to locate the node
@@ -115,6 +129,7 @@ class EntityCentricSchemaResolver:
                         schema.setdefault("anchor_entities", []).append(anchor)
                         node_schemas.append(schema)
                     else:
+                        logging.info(f"No cache hit for node: {node_id}, extracting from Neo4j")
                         # Extract schema from Neo4j
                         schema = self._extract_node_schema(node_id, node_type)
                         if schema:
@@ -124,7 +139,8 @@ class EntityCentricSchemaResolver:
                             node_schemas.append(schema)
 
                 if not node_schemas:
-                    logging.warning("No node schemas extracted, using full schema")
+                    self.last_failure_reason = "locate_node_failed"
+                    logging.warning("No node schemas extracted (all entities unresolved), using full schema")
                     return None
 
                 # Step 3: Merge schemas
@@ -135,6 +151,7 @@ class EntityCentricSchemaResolver:
                 return merged_schema
 
             except Exception as e:
+                self.last_failure_reason = "resolver_exception"
                 logging.error(f"Entity resolution attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     logging.error("Max retries exceeded, falling back to full schema")
@@ -220,6 +237,9 @@ class EntityCentricSchemaResolver:
             else:
                 response_text = str(response)
 
+            logging.info(f"Entity identification raw response: {response_text}")
+            logging.getLogger("batch_pipeline").info(f"Entity identification raw response: {response_text}")
+
             # Parse JSON response
             response_text = response_text.strip()
             # Remove markdown code blocks if present
@@ -228,11 +248,18 @@ class EntityCentricSchemaResolver:
                 response_text = "\n".join(lines[1:-1]) if len(lines) > 2 else response_text
 
             entity_info = json.loads(response_text)
+            parsed_msg = (
+                f"Entity identification parsed: confidence={entity_info.get('confidence')} "
+                f"entities={len(entity_info.get('entities') or [])}"
+            )
+            logging.info(parsed_msg)
+            logging.getLogger("batch_pipeline").info(parsed_msg)
             logging.info(f"Entity identification result: {entity_info}")
             return entity_info
 
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse entity identification response: {e}")
+            logging.error(f"Entity identification raw response: {response_text}")
             return None
         except Exception as e:
             logging.error(f"Entity identification failed: {e}")
@@ -259,17 +286,24 @@ class EntityCentricSchemaResolver:
         identifier = entity.get("identifier")
         name = entity.get("name")
 
+        logging.info(
+            f"Locating node for entity type={entity_type} "
+            f"has_sequence={bool(sequence)} has_identifier={bool(identifier)} has_name={bool(name)}"
+        )
+
         # Strategy 1: Exact sequence match
         if sequence:
             node_info = self._find_node_by_sequence(sequence)
             if node_info:
                 return node_info
+            logging.info("Sequence match failed")
 
         # Strategy 2: Property match (name or identifier)
         if identifier or name:
             node_id = self._find_node_by_property(identifier or name, entity_type)
             if node_id:
                 return {"id": node_id, "type": entity_type}
+            logging.info("Property match failed")
 
         logging.warning(f"Could not locate node for entity: {entity}")
         return None
@@ -285,6 +319,7 @@ class EntityCentricSchemaResolver:
             Dict with node id/type or None
         """
         try:
+            logging.info(f"Sequence match: length={len(sequence)}")
             # Escape single quotes in sequence
             escaped_sequence = sequence.replace("'", "\\'")
             query = f"""
@@ -303,6 +338,7 @@ class EntityCentricSchemaResolver:
                 if node_id:
                     logging.info(f"Found node by sequence: {node_id} ({node_type})")
                     return {"id": node_id, "type": node_type}
+            logging.info("Sequence match returned no result")
 
         except Exception as e:
             logging.error(f"Sequence match failed: {e}")
@@ -321,6 +357,7 @@ class EntityCentricSchemaResolver:
             Node ID or None
         """
         try:
+            logging.info(f"Property match: identifier='{identifier}' type={entity_type}")
             query = f"""
             MATCH (n:{entity_type})
             WHERE n.id = $identifier OR n.name CONTAINS $identifier OR n.primary_protein_name CONTAINS $identifier
@@ -333,6 +370,7 @@ class EntityCentricSchemaResolver:
                 node_id = result[0].get("node_id")
                 logging.info(f"Found node by property: {node_id}")
                 return node_id
+            logging.info("Property match returned no result")
 
         except Exception as e:
             logging.error(f"Property match failed: {e}")
@@ -716,6 +754,9 @@ class EntityCentricSchemaResolver:
             cache_file = self.entity_cache_dir / f"{safe_id}.json"
 
             if not cache_file.exists():
+                msg = f"Cache miss (file not found) for node: {node_id}"
+                logging.info(msg)
+                logging.getLogger("batch_pipeline").info(msg)
                 return None
 
             with open(cache_file, 'r') as f:
@@ -726,15 +767,22 @@ class EntityCentricSchemaResolver:
             age_hours = (datetime.now() - cached_time).total_seconds() / 3600
 
             if age_hours > self.cache_ttl_hours:
-                logging.info(f"Cache expired for {node_id}, deleting")
+                msg = f"Cache expired for {node_id}, deleting"
+                logging.info(msg)
+                logging.getLogger("batch_pipeline").info(msg)
                 cache_file.unlink()
                 return None
 
             schema = cached.get("schema") or {}
             if "relations" not in schema:
-                logging.info(f"Cache schema format outdated for {node_id}, deleting")
+                msg = f"Cache schema format outdated for {node_id}, deleting"
+                logging.info(msg)
+                logging.getLogger("batch_pipeline").info(msg)
                 cache_file.unlink()
                 return None
+            msg = f"Cache hit for node: {node_id} ({cache_file})"
+            logging.info(msg)
+            logging.getLogger("batch_pipeline").info(msg)
             return schema
 
         except Exception as e:

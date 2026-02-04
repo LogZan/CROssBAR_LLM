@@ -271,7 +271,7 @@ def render_results_by_question(
             lines.append(f"\n**{model_name}** {status} (Cypher Gen: {cypher_time:.1f}s)")
             lines.append(
                 f"> Resolver: enabled={result.get('resolver_enabled')} used={result.get('resolver_used')} "
-                f"reason={result.get('resolver_reason')}"
+                f"reason={result.get('resolver_reason')} detail={result.get('resolver_detail')}"
             )
             lines.append(
                 f"> Tokens: cypher {result.get('cypher_prompt_tokens', 0)}/{result.get('cypher_output_tokens', 0)} "
@@ -399,7 +399,7 @@ def render_results_by_model(
             )
             lines.append(
                 f"\n**Resolver:** enabled={q.get('resolver_enabled')} used={q.get('resolver_used')} "
-                f"reason={q.get('resolver_reason')}"
+                f"reason={q.get('resolver_reason')} detail={q.get('resolver_detail')}"
             )
             lines.append(f"\n**Question:** {q.get('question')}")
             lines.append(f"\n**Benchmark Output:** {q.get('benchmark_output')}")

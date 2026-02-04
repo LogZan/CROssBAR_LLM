@@ -1,108 +1,34 @@
 from langchain.prompts.prompt import PromptTemplate
 
 
-CYPHER_GENERATION_TEMPLATE = """Task:Generate Cypher statement to query a graph database.
-Instructions:
-Use only the provided relationship types and properties in the schema.
-Do not use any other relationship types or properties that are not provided.
-Make sure directionality of relationships is consistent with provided schema.
-Nodes:
-{node_types}
-Node properties:
-{node_properties}
-Relationship properties:
-{edge_properties}
-Relationships:
-{edges}
-Resolved schema (JSON for the specific target entity):
+CYPHER_GENERATION_TEMPLATE = """Task: Generate a Cypher query.
+
+Resolved schema (filtered JSON for the target entity):
 {resolved_schema}
-Anchor entities (high confidence, use their ids directly when possible):
+Anchor entities (use id when present):
 {anchor_entities}
-Evidence plan:
+
+Rules (must follow):
+- Start with MATCH. Output ONLY Cypher (no markdown).
+- Use ONLY relationship types and properties that appear in the schema.
+- Do NOT invent headers; do NOT use edge props on nodes or node props on edges.
+- Prefer anchor id matches over name/fuzzy.
+- Do not add directionality not shown in schema.
+- Avoid double quotes for string literals.
+
+Evidence plan (as Cypher comments):
 - Write the evidence plan as Cypher comments using `//` so the query remains valid.
-- Before writing Cypher, list 3–6 evidence items you will retrieve.
-- Each item must be a property/edge shown in Target node context.
-- Use this format:
+- List as more items as possible to cover all aspects of the question.
+- For each item, specify whether it's a node property or edge property:
   - node:<Label>.<property>
-  - edge:<RELATIONSHIP>.<property> (if applicable)
-- Do not invent properties or edges.
-Evidence plan:
-- Write the evidence plan as Cypher comments using `//` so the query remains valid.
-- Before writing Cypher, list 3–6 evidence items you will retrieve.
-- Each item must be a property/edge shown in Target node context.
-- Use this format:
-  - node:<Label>.<property>
-  - edge:<RELATIONSHIP>.<property> (if applicable)
-- Do not invent properties or edges.
-Note: Do not include any explanations or apologies in your responses.
-Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
-Do not add any directionality to generated Cypher query.
-Do not include any text except the generated Cypher query.
-Do not make up node types, edge types or their properties that do not exist in the provided schema. Use your internal knowledge to map question to node types, edge types or their properties in the provided schema.
-Do not make uppercase, lowercase or camelcase given biological entity names in question. Use it as is.
-Note: SmallMolecule is parent label for Drug and Compounds. If question is asking for both nodes use SmallMolecule.
-Note: You MUST start your response with MATCH. Do not use markdown blocks.
-Note: Do not use double quotes symbols in generated Cypher query (i.e., ''x'' or ""x"")
-Note: Prefer properties and edges shown in Target node context. If a value or property is not shown, avoid exact matches unless the question explicitly gives it.
-Note: If Anchor entities are provided, prefer matching by id over name or fuzzy filters.
-Note: Return ids, names, and relevant properties to provide rich context for reasoning.
-Relevance rule:
-- Do not return a single property.
-- For classification questions, return:
-  (1) entity id + name
-  (2) the classification property
-  (3) one supporting evidence property (e.g., EC number, GO term, keyword)
-Coverage target:
-- Aim to return 4–8 fields total, prioritizing relevance.
-Edge guidance:
-- When a relationship is used, return 1–2 relevant edge properties (if available in schema).
-Schema compliance:
-- Use ONLY property/relationship headers that are explicitly present in the provided schema or target context.
-- If a header is not listed there, it must not appear in the Cypher.
-Property ownership:
-- Edge properties must be accessed via relationship variables (r.prop).
-- Node properties must be accessed via node variables (n.prop).
-- Do not use edge properties on nodes or node properties on edges.
-Edge guidance:
-- When a relationship is used, return 1–2 relevant edge properties (if available in schema).
-Schema compliance:
-- Do not use any property/relationship headers that are not present in the provided schema or target context.
-Relevance rule:
-- Do not return a single property.
-- For classification questions, return:
-  (1) entity id + name
-  (2) the classification property
-  (3) one supporting evidence property (e.g., EC number, GO term, keyword)
-Coverage target:
-- Aim to return 4–8 fields total, prioritizing relevance.
+  - edge:<RELATIONSHIP>.<property>
+- Use only items present in the resolved schema.
 
-Examples: Here are a few examples of generated Cypher statements for particular questions:
+Note on schema structure:
+- target_node is the anchor.
+- relations[] groups edge + neighbor_node.
 
-# How many diseases are related to gene with id of ncbigene:23612?
-MATCH (:Gene {{id:"ncbigene:23612"}})-[irt:Gene_is_related_to_disease]-(:Disease)
-RETURN count(irt) AS numberOfDiseases
-
-# "Which proteins that are mentioned in at least 2 databases and have intact score bigger than or equal to 0.3 are interacting with protein named synaptotagmin-like protein 4? Return the names and ids of proteins"
-MATCH (p1:Protein)-[ppi:Protein_interacts_with_protein]-(p2:Protein)
-WHERE p1.primary_protein_name = "Synaptotagmin-like protein 4" AND ppi.intact_score IS NOT NULL AND size(ppi.source) >= 2 and ppi.intact_score >= 0.3
-RETURN p2.protein_names, p2.id
-
-# Which proteins are encoded by genes related to a disease and interact with proteins with length greater than 200 and have mentioned in at least 2 source databases?
-MATCH (p1:Protein)<-[:Gene_encodes_protein]-(:Gene)-[:Gene_is_related_to_disease]-(:Disease), (p1)-[ppi:Protein_interacts_with_protein]-(p2:Protein)
-WHERE p2.length > 200 AND size(ppi.source) >= 2
-RETURN DISTINCT p1.protein_names, p1.id
-
-# Which diseases are related to gene that is regulated by gene named ALX4. Return the path.
-MATCH path=(dis:Disease)-[:Gene_is_related_to_disease]-(:Gene)-[:Gene_regulates_gene]-(reg:Gene)
-WHERE reg.gene_symbol IS NOT NULL AND reg.gene_symbol = "ALX4"
-RETURN path 
-
-# Convert 51545 kegg id to entrez id (in other words, ncbi gene id).
-MATCH (g:Gene)
-WHERE g.kegg_ids IS NOT NULL AND "51545" IN g.kegg_ids
-RETURN g.id AS entrez_id
-
-The question is:
+Question:
 {question}
 """
 

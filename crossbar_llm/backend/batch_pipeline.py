@@ -378,6 +378,7 @@ class QuestionResult:
     resolver_enabled: Optional[bool] = None
     resolver_used: Optional[bool] = None
     resolver_reason: Optional[str] = None
+    resolver_detail: Optional[str] = None
     # Multi-step trace
     multi_step_trace: list = field(default_factory=list)
     
@@ -405,6 +406,7 @@ class QuestionResult:
             "resolver_enabled": self.resolver_enabled,
             "resolver_used": self.resolver_used,
             "resolver_reason": self.resolver_reason,
+            "resolver_detail": self.resolver_detail,
             "multi_step_trace": self.multi_step_trace,
         }
 
@@ -658,13 +660,14 @@ class BatchPipeline:
                 result.resolver_enabled = resolver_status.get("enabled")
                 result.resolver_used = resolver_status.get("used")
                 result.resolver_reason = resolver_status.get("reason")
+                result.resolver_detail = resolver_status.get("detail")
                 token_stats = pipeline.get_last_token_stats()
                 result.cypher_prompt_tokens = token_stats.get("cypher_prompt_tokens", 0)
                 result.cypher_output_tokens = token_stats.get("cypher_output_tokens", 0)
                 self.logger.info(
                     f"  [{model_name}] Question {question_index} step {step}: "
                     f"entity-centric enabled={result.resolver_enabled} used={result.resolver_used} "
-                    f"reason={result.resolver_reason}"
+                    f"reason={result.resolver_reason} detail={result.resolver_detail}"
                 )
 
                 if not success:
@@ -680,6 +683,7 @@ class BatchPipeline:
                         "resolver_enabled": result.resolver_enabled,
                         "resolver_used": result.resolver_used,
                         "resolver_reason": result.resolver_reason,
+                        "resolver_detail": result.resolver_detail,
                     })
                     if failure_count >= multi_cfg.max_failures:
                         result.error = query_or_error
@@ -747,6 +751,7 @@ class BatchPipeline:
                     "resolver_enabled": result.resolver_enabled,
                     "resolver_used": result.resolver_used,
                     "resolver_reason": result.resolver_reason,
+                    "resolver_detail": result.resolver_detail,
                     "cypher_prompt_tokens": result.cypher_prompt_tokens,
                     "cypher_output_tokens": result.cypher_output_tokens,
                 })

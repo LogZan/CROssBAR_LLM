@@ -69,6 +69,14 @@ class ResultComparator:
                         "cypher_gen_time": q.get("cypher_gen_time", 0),
                         "neo4j_query_time": q.get("neo4j_query_time", 0),
                         "answer_gen_time": q.get("answer_gen_time", 0),
+                        "resolver_enabled": q.get("resolver_enabled"),
+                        "resolver_used": q.get("resolver_used"),
+                        "resolver_reason": q.get("resolver_reason"),
+                        "resolver_detail": q.get("resolver_detail"),
+                        "cypher_prompt_tokens": q.get("cypher_prompt_tokens", 0),
+                        "cypher_output_tokens": q.get("cypher_output_tokens", 0),
+                        "answer_prompt_tokens": q.get("answer_prompt_tokens", 0),
+                        "answer_output_tokens": q.get("answer_output_tokens", 0),
                         "success": q.get("success", False),
                         "error": q.get("error"),
                         "multi_step_trace": q.get("multi_step_trace", []),
@@ -207,8 +215,9 @@ class ResultComparator:
                 resolver_enabled = result.get("resolver_enabled")
                 resolver_used = result.get("resolver_used")
                 resolver_reason = result.get("resolver_reason")
+                resolver_detail = result.get("resolver_detail")
                 lines.append(
-                    f"> Resolver: enabled={resolver_enabled} used={resolver_used} reason={resolver_reason}"
+                    f"> Resolver: enabled={resolver_enabled} used={resolver_used} reason={resolver_reason} detail={resolver_detail}"
                 )
                 lines.append(
                     f"> Tokens: cypher {result.get('cypher_prompt_tokens', 0)}/{result.get('cypher_output_tokens', 0)} "

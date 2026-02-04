@@ -20,7 +20,7 @@ from typing import Literal, Union
 
 import numpy as np
 import pandas as pd
-from .neo4j_query_corrector import correct_query
+from .neo4j_query_corrector import correct_query, extract_cypher
 from .neo4j_query_executor_extractor import Neo4jGraphHelper
 from .entity_centric_schema_resolver import EntityCentricSchemaResolver
 from .qa_templates import (
@@ -409,20 +409,24 @@ class QueryChain:
                 if resolved_schema:
                     self.last_resolution_used = True
                     self.last_resolution_reason = "resolved"
+                    self.last_resolution_detail = None
                     schema_context = resolved_schema
                     logging.info("Using entity-centric filtered schema")
                 else:
                     self.last_resolution_used = False
                     self.last_resolution_reason = "fallback_full_schema"
+                    self.last_resolution_detail = getattr(self.resolver, "last_failure_reason", "unknown")
                     logging.info("Entity resolution returned None, using full schema")
             except Exception as e:
                 self.last_resolution_used = False
                 self.last_resolution_reason = "resolver_error"
+                self.last_resolution_detail = "resolver_exception"
                 logging.warning(f"Entity resolution failed: {e}, using full schema")
                 schema_context = self.schema
         else:
             self.last_resolution_used = False
             self.last_resolution_reason = "resolver_disabled"
+            self.last_resolution_detail = "resolver_disabled"
 
         if self.search_type == "db_search":
             anchor_entities = self._format_anchor_entities(schema_context)
@@ -550,7 +554,7 @@ class QueryChain:
         self.last_cypher_output_tokens = _count_tokens(self.generated_query)
 
         corrected_query = correct_query(
-            query=self.generated_query, edge_schema=self.schema["edges"]
+            query=self.generated_query, edge_schema=schema_context
         )
 
         enforced_query = self._enforce_anchor_query(corrected_query, schema_context)
@@ -585,6 +589,7 @@ class QueryChain:
         return "\n".join(lines)
 
     def _validate_or_retry_query(self, query: str, schema_context: dict, prompt_text: str, question: str) -> str:
+        query = self._sanitize_cypher_text(query)
         invalid = self._find_invalid_headers(query, schema_context)
         if not invalid:
             return query
@@ -614,10 +619,24 @@ class QueryChain:
             .replace("cypher", "")
             .strip("`")
         )
+        retry_query = self._sanitize_cypher_text(retry_query)
         invalid_retry = self._find_invalid_headers(retry_query, schema_context)
         if invalid_retry:
             logging.warning(f"Retry still has invalid headers: {invalid_retry}")
         return retry_query
+
+    def _sanitize_cypher_text(self, text: str) -> str:
+        if not text:
+            return text
+        cleaned = extract_cypher(text.strip())
+        lines = cleaned.splitlines()
+        for i, line in enumerate(lines):
+            if re.match(r"\\s*(MATCH|CREATE|MERGE|CALL|RETURN|WITH|UNWIND)\\b", line, re.IGNORECASE):
+                return "\n".join(lines[i:]).strip()
+        # Fallback: strip leading comment/blank lines
+        while lines and (not lines[0].strip() or lines[0].lstrip().startswith("//")):
+            lines.pop(0)
+        return "\n".join(lines).strip()
 
     def _find_invalid_headers(self, query: str, schema_context: dict) -> set[str]:
         invalid = set()
@@ -690,7 +709,7 @@ class QueryChain:
             return query
 
         # Try to inject id into a node pattern with matching label
-        label_pattern_str = rf"\(\s*(\w+)\s*:\s*{re.escape(anchor_type)}(?:\s*\{{[^}}]*\}})?\s*\)"
+        label_pattern_str = rf"\(\s*(?P<var>\w+)\s*:\s*{re.escape(anchor_type)}\s*(?P<props>\{{[^}}]*\}})?\s*\)"
         try:
             label_pattern = re.compile(label_pattern_str)
         except re.error as e:
@@ -700,8 +719,8 @@ class QueryChain:
             return query
         match = label_pattern.search(query)
         if match:
-            var_name = match.group(1)
-            props = match.group(2)
+            var_name = match.group("var")
+            props = match.group("props")
             if props:
                 if "id" in props:
                     return query
@@ -713,14 +732,14 @@ class QueryChain:
 
         # Fallback: replace the first node pattern with anchor label + id
         generic_pattern = re.compile(
-            r"\(\s*(\w+)(?:\s*:\s*(\w+))?\s*(?:\{[^}]*\})?\s*\)"
+            r"\(\s*(?P<var>\w+)(?:\s*:\s*(?P<label>\w+))?\s*(?P<props>\{[^}]*\})?\s*\)"
         )
         match = generic_pattern.search(query)
         if not match:
             return f'MATCH (p:{anchor_type} {{id:\"{anchor_id}\"}})\\nRETURN p'
 
-        var_name = match.group(1)
-        props = match.group(3)
+        var_name = match.group("var")
+        props = match.group("props")
         if props:
             if "id" in props:
                 injected = props
@@ -808,6 +827,7 @@ class RunPipeline:
             "enabled": getattr(self._resolver_status, "enabled", False),
             "used": getattr(self._resolver_status, "used", False),
             "reason": getattr(self._resolver_status, "reason", "unknown"),
+            "detail": getattr(self._resolver_status, "detail", None),
         }
 
     def get_last_token_stats(self) -> dict:
@@ -936,6 +956,7 @@ class RunPipeline:
         self._resolver_status.enabled = bool(query_chain.resolver)
         self._resolver_status.used = bool(getattr(query_chain, "last_resolution_used", False))
         self._resolver_status.reason = getattr(query_chain, "last_resolution_reason", "unknown")
+        self._resolver_status.detail = getattr(query_chain, "last_resolution_detail", None)
         self._token_stats.cypher_prompt_tokens = getattr(query_chain, "last_cypher_prompt_tokens", 0)
         self._token_stats.cypher_output_tokens = getattr(query_chain, "last_cypher_output_tokens", 0)
 

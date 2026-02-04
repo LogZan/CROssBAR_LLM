@@ -29,7 +29,7 @@ cd "$BACKEND_DIR"
 # Run batch pipeline
 echo "Starting batch pipeline..."
 echo ""
-python batch_pipeline.py --config "$CONFIG_PATH" "$@"
+python batch_pipeline.py --config "$CONFIG_PATH" --verbose "$@"
 
 # Get latest run directory
 LATEST_RUN=$(ls -td "$PROJECT_ROOT/batch_output/run_"* 2>/dev/null | head -1)

@@ -271,7 +271,7 @@ class QueryCorrector:
 
 # PREPARE EDGE SCHEMA
 @validate_call
-def correct_query(query: str, edge_schema: list) -> str:
+def correct_query(query: str, edge_schema: object) -> str:
     """
     Main function to correct a Cypher query based on edge schemas
     
@@ -284,12 +284,30 @@ def correct_query(query: str, edge_schema: list) -> str:
     """
     Logger.info("Starting query correction process")
     Logger.debug(f"Original query: {query}")
-    Logger.debug(f"Edge schema count: {len(edge_schema)}")
-    
+    edges = []
+    if isinstance(edge_schema, dict):
+        edges = edge_schema.get("edges") or []
+        if not edges:
+            relations = edge_schema.get("relations") or []
+            target_node = edge_schema.get("target_node") or {}
+            source_label = target_node.get("label") or edge_schema.get("node_type")
+            if source_label and relations:
+                for rel in relations:
+                    edge = rel.get("edge") or {}
+                    neighbor = rel.get("neighbor_node") or {}
+                    edge_type = edge.get("type")
+                    neighbor_label = neighbor.get("label")
+                    if edge_type and neighbor_label:
+                        edges.append(f"(:{source_label})-[:{edge_type}]->(:{neighbor_label})")
+    elif isinstance(edge_schema, list):
+        edges = edge_schema
+
+    Logger.debug(f"Edge schema count: {len(edges)}")
+
     query = extract_cypher(query.strip("\n"))
     str_schemas = ""
     to_be_replaced = ["(", ")", ":", "[", "]", ">", "<"]
-    for e in edge_schema:
+    for e in edges:
         splitted = e.strip().split("-")
         splitted_corrected = []
         for s in splitted:
