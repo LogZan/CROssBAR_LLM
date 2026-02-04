@@ -386,24 +386,21 @@ class EntityCentricSchemaResolver:
             RETURN rel_type, collect(DISTINCT p) AS non_null_props
             """
             edge_result = self.neo4j_helper.execute(edge_query, top_k=500)
-            edges = []
+            edge_props_map = {}
             if edge_result and edge_result != "Given cypher query did not return any result":
                 for row in edge_result:
                     rel_type = row.get("rel_type")
                     props = row.get("non_null_props") or []
                     if rel_type:
-                        edges.append({
-                            "type": rel_type,
-                            "properties": sorted(set(props)),
-                        })
+                        edge_props_map[rel_type] = sorted(set(props))
 
             neighbor_query = f"""
-            MATCH (n:{node_type} {{id: '{escaped_node_id}'}})--(m)
-            WITH labels(m) AS labels, keys(m) AS props, m
+            MATCH (n:{node_type} {{id: '{escaped_node_id}'}})-[r]-(m)
+            WITH type(r) AS rel_type, labels(m) AS labels, keys(m) AS props, m
             UNWIND props AS prop
-            WITH labels, prop, m[prop] AS v
+            WITH rel_type, labels, prop, m[prop] AS v
             WHERE {non_empty_check}
-            RETURN labels,
+            RETURN rel_type, labels,
                    collect(DISTINCT prop) AS properties,
                    collect(DISTINCT CASE
                      WHEN toLower(prop) CONTAINS 'name'
@@ -416,37 +413,62 @@ class EntityCentricSchemaResolver:
             neighbor_result = self.neo4j_helper.execute(neighbor_query, top_k=500)
             neighbor_props = {}
             neighbor_core = {}
+            rel_to_neighbors = {}
             if neighbor_result and neighbor_result != "Given cypher query did not return any result":
                 for row in neighbor_result:
+                    rel_type = row.get("rel_type")
                     labels = row.get("labels") or []
                     props = row.get("properties") or []
                     name_like = [x for x in (row.get("name_like") or []) if x]
                     leaf_label = self._select_leaf_label(labels)
                     if leaf_label:
+                        if rel_type:
+                            rel_to_neighbors.setdefault(rel_type, set()).add(leaf_label)
                         if props:
                             neighbor_props[leaf_label] = sorted(set(props))
                         if name_like:
                             neighbor_core.setdefault(leaf_label, [])
                             neighbor_core[leaf_label].extend(name_like)
 
+            relations = []
+            edge_core_cache = {}
+            for rel_type, props in edge_props_map.items():
+                desc_props = [p for p in props if self._is_desc_property(p)]
+                if rel_type not in edge_core_cache:
+                    edge_core_cache[rel_type] = self._edge_desc_samples(node_type, node_id, rel_type, desc_props) if desc_props else {}
+                edge_core = edge_core_cache[rel_type]
+                neighbor_labels = sorted(rel_to_neighbors.get(rel_type, set()))
+                if not neighbor_labels:
+                    continue
+                for neighbor_label in neighbor_labels:
+                    relations.append({
+                        "edge": {
+                            "type": rel_type,
+                            "properties": sorted(set(props)),
+                            "core_values": edge_core,
+                        },
+                        "neighbor_node": {
+                            "label": neighbor_label,
+                            "properties": neighbor_props.get(neighbor_label, []),
+                            "core_values": neighbor_core.get(neighbor_label, []),
+                        },
+                    })
+
             schema = {
                 "node_id": node_id,
                 "node_type": node_type,
                 "properties": sorted(set(non_null_props)),
-                "edges": edges,
-                "neighbor_node_properties": neighbor_props,
+                "relations": relations,
                 "core_values": {
                     "node": {
                         "id": node_id,
                         "name_like": name_like,
                     },
-                    "neighbors": neighbor_core,
-                    "edges": {},
                 },
             }
 
             logging.info(
-                f"Extracted schema for node {node_id}: {len(schema.get('edges', []))} edges, "
+                f"Extracted schema for node {node_id}: {len(schema.get('relations', []))} relations, "
                 f"{len(neighbor_props)} neighbor types"
             )
             return schema
@@ -474,8 +496,9 @@ class EntityCentricSchemaResolver:
             "node_properties": [],
             "edges": [],
             "edge_properties": [],
+            "relations": [],
+            "target_nodes": [],
             "anchor_entities": [],
-            "target_node_context": "",
         }
 
         seen_node_props = set()
@@ -500,12 +523,26 @@ class EntityCentricSchemaResolver:
                     })
                     seen_node_props.add(prop_key)
 
-            # Merge neighbor node properties
-            neighbor_props = schema.get("neighbor_node_properties", {})
-            for neighbor_label, props in neighbor_props.items():
-                if neighbor_label:
-                    merged["nodes"].add(neighbor_label)
-                if props and neighbor_label:
+            # Merge relations into grouped form + standard schema lists
+            for rel in schema.get("relations", []) or []:
+                if len(merged["edges"]) >= self.max_edge_types:
+                    break
+
+                edge = rel.get("edge") or {}
+                neighbor = rel.get("neighbor_node") or {}
+                edge_type = edge.get("type")
+                neighbor_label = neighbor.get("label")
+
+                if not edge_type or not neighbor_label:
+                    continue
+
+                # Track grouped relations
+                merged["relations"].append(rel)
+
+                # Merge neighbor node properties
+                merged["nodes"].add(neighbor_label)
+                props = neighbor.get("properties") or []
+                if props:
                     prop_key = (neighbor_label, tuple(sorted(props)))
                     if prop_key not in seen_node_props:
                         merged["node_properties"].append({
@@ -514,52 +551,35 @@ class EntityCentricSchemaResolver:
                         })
                         seen_node_props.add(prop_key)
 
-            # Merge edges (limit to max_edge_types)
-            for edge in schema.get("edges", []):
-                if len(merged["edges"]) >= self.max_edge_types:
-                    break
-
-                edge_type = edge.get("type")
-                source = edge.get("source")
-                target = edge.get("target")
-
-                if not edge_type:
-                    continue
-
-                # Create edge string representation
-                if source:
-                    edge_str = f"(:{source})-[:{edge_type}]->(:{node_type})"
-                elif target:
-                    edge_str = f"(:{node_type})-[:{edge_type}]->(:{target})"
-                else:
-                    continue
-
+                # Merge edges + edge properties
+                edge_str = f"(:{node_type})-[:{edge_type}]->(:{neighbor_label})"
                 if edge_str not in seen_edges:
                     merged["edges"].append(edge_str)
                     seen_edges.add(edge_str)
 
-                    # Add edge properties
-                    edge_props = edge.get("properties", [])
-                    if edge_props and edge_type not in seen_edge_props:
-                        merged["edge_properties"].append({
-                            "type": edge_type,
-                            "properties": [{"property": p, "type": "STRING"} for p in edge_props]
-                        })
-                        seen_edge_props.add(edge_type)
+                edge_props = edge.get("properties", []) or []
+                if edge_props and edge_type not in seen_edge_props:
+                    merged["edge_properties"].append({
+                        "type": edge_type,
+                        "properties": [{"property": p, "type": "STRING"} for p in edge_props]
+                    })
+                    seen_edge_props.add(edge_type)
 
             for anchor in schema.get("anchor_entities", []) or []:
                 if anchor not in merged["anchor_entities"]:
                     merged["anchor_entities"].append(anchor)
 
-            context = schema.get("target_node_context")
-            if context:
-                if merged["target_node_context"]:
-                    merged["target_node_context"] += "\n\n" + context
-                else:
-                    merged["target_node_context"] = context
+            merged["target_nodes"].append({
+                "id": schema.get("node_id"),
+                "label": node_type,
+                "properties": schema.get("properties", []),
+                "core_values": schema.get("core_values", {}).get("node", {}),
+            })
 
         # Convert sets to lists
         merged["nodes"] = [{"labels": list(merged["nodes"])}]
+        if len(merged["target_nodes"]) == 1:
+            merged["target_node"] = merged["target_nodes"][0]
 
         logging.info(f"Merged {len(node_schemas)} schemas: {len(merged['edges'])} edges, {len(merged['node_properties'])} node types")
         return merged
@@ -576,13 +596,12 @@ class EntityCentricSchemaResolver:
         """
         node_type = node_schema.get("node_type")
         properties = node_schema.get("properties", [])
-        edges_data = node_schema.get("edges", [])
-
-        neighbor_props = node_schema.get("neighbor_node_properties", {})
+        relations_data = node_schema.get("relations", []) or []
         node_labels = {node_type}
-        for label in neighbor_props.keys():
-            if label:
-                node_labels.add(label)
+        for rel in relations_data:
+            neighbor_label = (rel.get("neighbor_node") or {}).get("label")
+            if neighbor_label:
+                node_labels.add(neighbor_label)
 
         schema = {
             "nodes": [{"labels": sorted(node_labels)}],
@@ -592,38 +611,35 @@ class EntityCentricSchemaResolver:
             }],
             "edges": [],
             "edge_properties": [],
+            "relations": relations_data,
+            "target_node": {
+                "id": node_schema.get("node_id"),
+                "label": node_type,
+                "properties": properties,
+                "core_values": node_schema.get("core_values", {}).get("node", {}),
+            },
             "anchor_entities": node_schema.get("anchor_entities", []),
-            "target_node_context": "",
         }
 
-        for neighbor_label, props in neighbor_props.items():
+        seen_edge_types = set()
+
+        for rel in relations_data[:self.max_edge_types]:
+            edge = rel.get("edge") or {}
+            neighbor = rel.get("neighbor_node") or {}
+            edge_type = edge.get("type")
+            neighbor_label = neighbor.get("label")
+            if not edge_type or not neighbor_label:
+                continue
+
+            schema["edges"].append(f"(:{node_type})-[:{edge_type}]->(:{neighbor_label})")
+
+            props = neighbor.get("properties") or []
             if neighbor_label and props:
                 schema["node_properties"].append({
                     "labels": neighbor_label,
                     "properties": [{"property": p, "type": "STRING"} for p in props]
                 })
 
-        seen_edge_types = set()
-
-        for edge in edges_data[:self.max_edge_types]:
-            edge_type = edge.get("type")
-            source = edge.get("source")
-            target = edge.get("target")
-
-            if not edge_type:
-                continue
-
-            # Create edge string
-            if source:
-                edge_str = f"(:{source})-[:{edge_type}]->(:{node_type})"
-            elif target:
-                edge_str = f"(:{node_type})-[:{edge_type}]->(:{target})"
-            else:
-                continue
-
-            schema["edges"].append(edge_str)
-
-            # Add edge properties
             if edge_type not in seen_edge_types:
                 edge_props = edge.get("properties", [])
                 if edge_props:
@@ -714,7 +730,12 @@ class EntityCentricSchemaResolver:
                 cache_file.unlink()
                 return None
 
-            return cached["schema"]
+            schema = cached.get("schema") or {}
+            if "relations" not in schema:
+                logging.info(f"Cache schema format outdated for {node_id}, deleting")
+                cache_file.unlink()
+                return None
+            return schema
 
         except Exception as e:
             logging.error(f"Failed to load cached schema for {node_id}: {e}")
