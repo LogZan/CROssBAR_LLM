@@ -104,6 +104,10 @@ class ResultComparator:
             total_cypher = sum(q.get("cypher_gen_time", 0) for q in questions)
             total_neo4j = sum(q.get("neo4j_query_time", 0) for q in questions)
             total_answer = sum(q.get("answer_gen_time", 0) for q in questions)
+            total_cypher_prompt_tokens = sum(q.get("cypher_prompt_tokens", 0) for q in questions)
+            total_cypher_output_tokens = sum(q.get("cypher_output_tokens", 0) for q in questions)
+            total_answer_prompt_tokens = sum(q.get("answer_prompt_tokens", 0) for q in questions)
+            total_answer_output_tokens = sum(q.get("answer_output_tokens", 0) for q in questions)
             num_questions = len(questions) if questions else 1
             
             summary["models"].append({
@@ -117,6 +121,10 @@ class ResultComparator:
                 "total_cypher_gen_time": total_cypher,
                 "total_neo4j_query_time": total_neo4j,
                 "total_answer_gen_time": total_answer,
+                "total_cypher_prompt_tokens": total_cypher_prompt_tokens,
+                "total_cypher_output_tokens": total_cypher_output_tokens,
+                "total_answer_prompt_tokens": total_answer_prompt_tokens,
+                "total_answer_output_tokens": total_answer_output_tokens,
             })
         
         # Sort by success rate descending
@@ -157,8 +165,8 @@ class ResultComparator:
         
         # Summary section with step timings
         lines.append("\n## Summary")
-        lines.append("\n| Model | Provider | Success | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) |")
-        lines.append("|-------|----------|---------|----------------|-----------|----------------|-----------|")
+        lines.append("\n| Model | Provider | Success | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) | Cypher Tok (in/out) | Answer Tok (in/out) |")
+        lines.append("|-------|----------|---------|----------------|-----------|----------------|-----------|---------------------|---------------------|")
         
         summary = self.get_summary()
         for m in summary["models"]:
@@ -166,7 +174,9 @@ class ResultComparator:
             lines.append(
                 f"| {m['model']} | {m['provider']} | {success_str} | "
                 f"{m['total_cypher_gen_time']:.1f} | {m['total_neo4j_query_time']:.1f} | "
-                f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} |"
+                f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} | "
+                f"{m.get('total_cypher_prompt_tokens', 0)}/{m.get('total_cypher_output_tokens', 0)} | "
+                f"{m.get('total_answer_prompt_tokens', 0)}/{m.get('total_answer_output_tokens', 0)} |"
             )
         
         # Detailed comparisons
@@ -194,6 +204,16 @@ class ResultComparator:
                 query = result["generated_query"] or "N/A"
                 cypher_time = result.get("cypher_gen_time", 0)
                 lines.append(f"\n**{model_name}** {status} (Cypher Gen: {cypher_time:.1f}s)")
+                resolver_enabled = result.get("resolver_enabled")
+                resolver_used = result.get("resolver_used")
+                resolver_reason = result.get("resolver_reason")
+                lines.append(
+                    f"> Resolver: enabled={resolver_enabled} used={resolver_used} reason={resolver_reason}"
+                )
+                lines.append(
+                    f"> Tokens: cypher {result.get('cypher_prompt_tokens', 0)}/{result.get('cypher_output_tokens', 0)} "
+                    f"answer {result.get('answer_prompt_tokens', 0)}/{result.get('answer_output_tokens', 0)}"
+                )
                 lines.append(f"```cypher\n{query}\n```")
                 
                 if result["error"]:

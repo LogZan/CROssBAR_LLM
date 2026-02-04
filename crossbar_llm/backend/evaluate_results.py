@@ -117,12 +117,39 @@ def parse_json_output(text: str) -> dict:
     except Exception:
         pass
 
+    # Common fixes: single quotes, Python booleans, trailing commas
+    fixed = text.strip()
+    if fixed.startswith("```"):
+        fixed = fixed.strip("`")
+    fixed = re.sub(r"\bTrue\b", "true", fixed)
+    fixed = re.sub(r"\bFalse\b", "false", fixed)
+    fixed = re.sub(r"'", "\"", fixed)
+    fixed = re.sub(r",\s*}", "}", fixed)
+    fixed = re.sub(r",\s*\]", "]", fixed)
+    # Repair unterminated JSON strings/braces
+    if fixed.count("{") > fixed.count("}"):
+        fixed += "}"
+    if fixed.count("\"") % 2 == 1:
+        fixed += "\""
+    try:
+        return json.loads(fixed)
+    except Exception:
+        pass
+
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(0))
+            parsed = json.loads(match.group(0))
+            if "rationale_match" not in parsed:
+                parsed["rationale_match"] = False
+            return parsed
         except Exception:
             return {}
+    # Partial JSON salvage
+    if "\"pass\": true" in fixed:
+        return {"pass": True, "reason": "Partial judge output parsed", "rationale_match": False}
+    if "\"pass\": false" in fixed:
+        return {"pass": False, "reason": "Partial judge output parsed", "rationale_match": False}
     return {}
 
 
@@ -135,8 +162,9 @@ def judge_answer(llm, question: str, expected: str, rationale: str, answer: str)
         "output matches the Benchmark Output in meaning. If the final output is correct, "
         "pass even if the reasoning/rationale differs. "
         "Separately assess if the rationale matches the benchmark rationale. "
-        "Output ONLY valid JSON: "
-        "{{\"pass\": true/false, \"reason\": \"...\", \"rationale_match\": true/false}}."
+        "Output ONLY valid JSON (no markdown, no extra text): "
+        "{{\"pass\": true/false, \"reason\": \"...\", \"rationale_match\": true/false}}. "
+        "Output JSON on a single line with no newlines and end with '}}'."
     )
     human_prompt = (
         "Question:\n{question}\n\n"
@@ -159,11 +187,12 @@ def judge_answer(llm, question: str, expected: str, rationale: str, answer: str)
     )
     data = parse_json_output(raw)
     if not data or "pass" not in data:
-        return {"pass": False, "reason": "Judge output parse error", "rationale_match": False}
+        return {"pass": False, "reason": "Judge output parse error", "rationale_match": False, "raw": raw}
     return {
         "pass": bool(data.get("pass")),
         "reason": str(data.get("reason", "")).strip(),
         "rationale_match": bool(data.get("rationale_match", False)),
+        "raw": raw,
     }
 
 
@@ -205,9 +234,9 @@ def render_results_by_question(
 
     lines.append("\n## Summary")
     lines.append(
-        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) |"
+        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) | Cypher Tok (in/out) | Answer Tok (in/out) |"
     )
-    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|")
+    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|---------------------|---------------------|")
 
     for m in summary["models"]:
         success_str = f"{m['success_count']}/{m['total_count']}"
@@ -216,7 +245,9 @@ def render_results_by_question(
         lines.append(
             f"| {m['model']} | {m['provider']} | {success_str} | {judge_str} | "
             f"{m['total_cypher_gen_time']:.1f} | {m['total_neo4j_query_time']:.1f} | "
-            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} |"
+            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} | "
+            f"{m.get('total_cypher_prompt_tokens', 0)}/{m.get('total_cypher_output_tokens', 0)} | "
+            f"{m.get('total_answer_prompt_tokens', 0)}/{m.get('total_answer_output_tokens', 0)} |"
         )
 
     lines.append("\n## Question Comparisons")
@@ -238,6 +269,14 @@ def render_results_by_question(
             query = result.get("generated_query") or "N/A"
             cypher_time = result.get("cypher_gen_time", 0)
             lines.append(f"\n**{model_name}** {status} (Cypher Gen: {cypher_time:.1f}s)")
+            lines.append(
+                f"> Resolver: enabled={result.get('resolver_enabled')} used={result.get('resolver_used')} "
+                f"reason={result.get('resolver_reason')}"
+            )
+            lines.append(
+                f"> Tokens: cypher {result.get('cypher_prompt_tokens', 0)}/{result.get('cypher_output_tokens', 0)} "
+                f"answer {result.get('answer_prompt_tokens', 0)}/{result.get('answer_output_tokens', 0)}"
+            )
             lines.append(f"```cypher\n{query}\n```")
             if result.get("error"):
                 lines.append(f"> Error: {result['error']}")
@@ -284,6 +323,9 @@ def render_results_by_question(
             if rationale_match is not None:
                 rm_status = "✅" if rationale_match else "⚠️"
                 lines.append(f"> Rationale match: {rm_status}")
+            raw = judge.get("raw")
+            if raw:
+                lines.append(f"> Raw: {raw}")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -305,9 +347,9 @@ def render_results_by_model(
 
     lines.append("\n## Summary")
     lines.append(
-        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) |"
+        "\n| Model | Provider | Success | Judge Pass | Cypher Gen (s) | Neo4j (s) | Answer Gen (s) | Total (s) | Cypher Tok (in/out) | Answer Tok (in/out) |"
     )
-    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|")
+    lines.append("|-------|----------|---------|------------|----------------|-----------|----------------|-----------|---------------------|---------------------|")
 
     for m in summary["models"]:
         success_str = f"{m['success_count']}/{m['total_count']}"
@@ -316,7 +358,9 @@ def render_results_by_model(
         lines.append(
             f"| {m['model']} | {m['provider']} | {success_str} | {judge_str} | "
             f"{m['total_cypher_gen_time']:.1f} | {m['total_neo4j_query_time']:.1f} | "
-            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} |"
+            f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} | "
+            f"{m.get('total_cypher_prompt_tokens', 0)}/{m.get('total_cypher_output_tokens', 0)} | "
+            f"{m.get('total_answer_prompt_tokens', 0)}/{m.get('total_answer_output_tokens', 0)} |"
         )
 
     lines.append("\n---")
@@ -332,6 +376,12 @@ def render_results_by_model(
         if "rationale_match" in judge_counts:
             lines.append(f"\nRationale Match: {judge_counts['rationale_match']}/{judge_counts['total']}")
         lines.append(f"\nTotal Time: {model_data.get('total_time_seconds', 0):.1f}s")
+        lines.append(
+            f"\nTotal Tokens: cypher {model_data.get('total_cypher_prompt_tokens', 0)}/"
+            f"{model_data.get('total_cypher_output_tokens', 0)} | "
+            f"answer {model_data.get('total_answer_prompt_tokens', 0)}/"
+            f"{model_data.get('total_answer_output_tokens', 0)}"
+        )
 
         for q in model_data.get("questions", []):
             q_index = q.get("question_index")
@@ -342,6 +392,14 @@ def render_results_by_model(
                 f"Neo4j: {q.get('neo4j_query_time', 0):.1f}s | "
                 f"Answer Gen: {q.get('answer_gen_time', 0):.1f}s | "
                 f"Total: {q.get('execution_time_seconds', 0):.1f}s"
+            )
+            lines.append(
+                f"\n**Tokens:** cypher {q.get('cypher_prompt_tokens', 0)}/{q.get('cypher_output_tokens', 0)} | "
+                f"answer {q.get('answer_prompt_tokens', 0)}/{q.get('answer_output_tokens', 0)}"
+            )
+            lines.append(
+                f"\n**Resolver:** enabled={q.get('resolver_enabled')} used={q.get('resolver_used')} "
+                f"reason={q.get('resolver_reason')}"
             )
             lines.append(f"\n**Question:** {q.get('question')}")
             lines.append(f"\n**Benchmark Output:** {q.get('benchmark_output')}")
@@ -369,6 +427,8 @@ def render_results_by_model(
             if "rationale_match" in judge:
                 rm_status = "✅" if judge.get("rationale_match") else "⚠️"
                 lines.append(f"> Rationale match: {rm_status}")
+            if judge.get("raw"):
+                lines.append(f"> Raw: {judge.get('raw')}")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -450,6 +510,7 @@ def main():
                 "pass": judge.get("pass", False),
                 "reason": judge.get("reason", ""),
                 "rationale_match": judge.get("rationale_match", False),
+                "raw": judge.get("raw", ""),
                 "model": judge_config.model,
             }
 
