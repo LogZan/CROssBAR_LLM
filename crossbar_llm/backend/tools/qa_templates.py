@@ -59,6 +59,10 @@ Edge guidance:
 Schema compliance:
 - Use ONLY property/relationship headers that are explicitly present in the provided schema or target context.
 - If a header is not listed there, it must not appear in the Cypher.
+Property ownership:
+- Edge properties must be accessed via relationship variables (r.prop).
+- Node properties must be accessed via node variables (n.prop).
+- Do not use edge properties on nodes or node properties on edges.
 Edge guidance:
 - When a relationship is used, return 1–2 relevant edge properties (if available in schema).
 Schema compliance:

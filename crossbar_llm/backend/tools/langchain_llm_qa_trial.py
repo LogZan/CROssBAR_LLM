@@ -621,30 +621,60 @@ class QueryChain:
         return retry_query
 
     def _find_invalid_headers(self, query: str, schema_context: dict) -> set[str]:
-        allowed = self._build_allowed_headers(schema_context)
-        used = self._extract_used_headers(query)
-        return {h for h in used if h not in allowed}
+        invalid = set()
+        node_props, edge_props = self._build_allowed_headers(schema_context)
+        try:
+            var_types = self._extract_var_types(query)
+            used = self._extract_used_headers(query)
+        except re.error as e:
+            logging.warning(f"Header validation regex error: {e}")
+            return invalid
+        for var_name, prop in used:
+            var_type = var_types.get(var_name)
+            if var_type == "edge":
+                if prop not in edge_props:
+                    invalid.add(prop)
+            elif var_type == "node":
+                if prop not in node_props:
+                    invalid.add(prop)
+            else:
+                if prop not in node_props and prop not in edge_props:
+                    invalid.add(prop)
+        return invalid
 
-    def _build_allowed_headers(self, schema_context: dict) -> set[str]:
-        allowed = set()
+    def _build_allowed_headers(self, schema_context: dict) -> tuple[set[str], set[str]]:
+        node_allowed = set()
+        edge_allowed = set()
         for entry in schema_context.get("node_properties", []) or []:
             for prop in entry.get("properties", []) or []:
                 prop_name = prop.get("property") if isinstance(prop, dict) else prop
                 if prop_name:
-                    allowed.add(prop_name)
+                    node_allowed.add(prop_name)
         for entry in schema_context.get("edge_properties", []) or []:
             for prop in entry.get("properties", []) or []:
                 prop_name = prop.get("property") if isinstance(prop, dict) else prop
                 if prop_name:
-                    allowed.add(prop_name)
-        return allowed
+                    edge_allowed.add(prop_name)
+        return node_allowed, edge_allowed
 
     @staticmethod
-    def _extract_used_headers(query: str) -> set[str]:
+    def _extract_used_headers(query: str) -> set[tuple[str, str]]:
         used = set()
-        for match in re.finditer(r"\\b\\w+\\.([A-Za-z_][A-Za-z0-9_]*)\\b", query):
-            used.add(match.group(1))
+        pattern = r"\b(\w+)\.([A-Za-z_][A-Za-z0-9_]*)\b"
+        for match in re.finditer(pattern, query):
+            used.add((match.group(1), match.group(2)))
         return used
+
+    @staticmethod
+    def _extract_var_types(query: str) -> dict[str, str]:
+        var_types: dict[str, str] = {}
+        node_pattern = r"\(\s*(\w+)\s*:\s*\w+"
+        edge_pattern = r"\[\s*(\w+)\s*:\s*\w+"
+        for match in re.finditer(node_pattern, query):
+            var_types[match.group(1)] = "node"
+        for match in re.finditer(edge_pattern, query):
+            var_types[match.group(1)] = "edge"
+        return var_types
 
     def _enforce_anchor_query(self, query: str, schema_context: dict) -> str:
         anchors = schema_context.get("anchor_entities") or []
@@ -661,7 +691,14 @@ class QueryChain:
             return query
 
         # Try to inject id into a node pattern with matching label
-        label_pattern = re.compile(rf"\\(\\s*(\\w+)\\s*:\\s*{re.escape(anchor_type)}\\s*(\\{{[^}}]*\\}})?\\s*\\)")
+        label_pattern_str = rf"\(\s*(\w+)\s*:\s*{re.escape(anchor_type)}(?:\s*\{{[^}}]*\}})?\s*\)"
+        try:
+            label_pattern = re.compile(label_pattern_str)
+        except re.error as e:
+            logging.warning(
+                f"Anchor enforce regex compile failed: {e} anchor_type={anchor_type} pattern={label_pattern_str}"
+            )
+            return query
         match = label_pattern.search(query)
         if match:
             var_name = match.group(1)
@@ -676,7 +713,9 @@ class QueryChain:
             return query[: match.start()] + replacement + query[match.end():]
 
         # Fallback: replace the first node pattern with anchor label + id
-        generic_pattern = re.compile(r"\\(\\s*(\\w+)(?:\\s*:\\s*(\\w+))?\\s*(\\{{[^}}]*\\}})?\\s*\\)")
+        generic_pattern = re.compile(
+            r"\(\s*(\w+)(?:\s*:\s*(\w+))?\s*(?:\{[^}]*\})?\s*\)"
+        )
         match = generic_pattern.search(query)
         if not match:
             return f'MATCH (p:{anchor_type} {{id:\"{anchor_id}\"}})\\nRETURN p'

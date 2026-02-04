@@ -667,6 +667,7 @@ class EntityCentricSchemaResolver:
                 edge_str = f"[:{edge_type}]"
                 if edge_props:
                     lines.append(f"- {edge_str} props={sorted(edge_props)}")
+                    lines.append("  Use as: r.<edge_property> (not node properties)")
                     desc_props = [p for p in edge_props if self._is_desc_property(p)]
                     if desc_props:
                         desc_values = self._edge_desc_samples(node_type, node_id, edge_type, desc_props)
