@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -50,6 +51,11 @@ class EntityCentricSchemaResolver:
         self.max_edge_types = self.config.get("max_edge_types", 200)
         self.cache_ttl_hours = self.config.get("cache_ttl_hours", 24)
         self.similarity_threshold = self.config.get("similarity_threshold", 0.7)
+        self.schema_config_path = self.config.get(
+            "schema_config_path",
+            "/GenSIvePFS/users/clzeng/workspace/CROssBARv2-KG/config/schema_config.yaml",
+        )
+        self.label_hierarchy, self.label_aliases = self._load_label_hierarchy(self.schema_config_path)
 
         # Ensure cache directory exists
         self.entity_cache_dir = self.cache_dir / "entity_schema_cache"
@@ -139,6 +145,63 @@ class EntityCentricSchemaResolver:
                 time.sleep(2 ** attempt)  # Exponential backoff
 
         return None
+
+    def _load_label_hierarchy(self, config_path: str) -> tuple[dict, dict]:
+        parent_map = {}
+        aliases = {}
+        if not config_path or not os.path.exists(config_path):
+            return parent_map, aliases
+        try:
+            with open(config_path, "r") as f:
+                data = yaml.safe_load(f) or {}
+            for key, value in data.items():
+                if not isinstance(value, dict):
+                    continue
+                norm_key = self._normalize_label(key)
+                label_in_input = value.get("label_in_input")
+                if label_in_input:
+                    aliases[self._normalize_label(label_in_input)] = norm_key
+                synonym_for = value.get("synonym_for")
+                is_a = value.get("is_a")
+                parent = synonym_for or is_a
+                if parent:
+                    parent_map[norm_key] = self._normalize_label(parent)
+        except Exception as e:
+            logging.warning(f"Failed to load schema_config.yaml for label hierarchy: {e}")
+        return parent_map, aliases
+
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        return "".join(ch for ch in label.lower() if ch.isalnum())
+
+    def _canonical_label(self, label: str) -> str:
+        return self.label_aliases.get(label, label)
+
+    def _label_depth(self, label: str) -> int:
+        seen = set()
+        depth = 0
+        current = label
+        while current in self.label_hierarchy and current not in seen:
+            seen.add(current)
+            current = self.label_hierarchy[current]
+            depth += 1
+        return depth
+
+    def _select_leaf_label(self, labels: list[str]) -> str:
+        if not labels:
+            return ""
+        best_label = labels[0]
+        best_depth = -1
+        for label in labels:
+            norm = self._normalize_label(label)
+            canon = self._canonical_label(norm)
+            depth = self._label_depth(canon) if canon in self.label_hierarchy or canon in self.label_aliases.values() else -1
+            if depth > best_depth:
+                best_depth = depth
+                best_label = label
+            elif depth == best_depth and len(label) > len(best_label):
+                best_label = label
+        return best_label
 
     def _identify_entity(self, question: str) -> Optional[Dict]:
         """
@@ -339,20 +402,35 @@ class EntityCentricSchemaResolver:
 
             neighbor_query = f"""
             MATCH (n:{node_type} {{id: '{escaped_node_id}'}})--(m)
-            WITH labels(m)[0] AS label, keys(m) AS props, m
+            WITH labels(m) AS labels, keys(m) AS props, m
             UNWIND props AS prop
-            WITH label, prop, m[prop] AS v
+            WITH labels, prop, m[prop] AS v
             WHERE {non_empty_check}
-            RETURN label, collect(DISTINCT prop) AS properties
+            RETURN labels,
+                   collect(DISTINCT prop) AS properties,
+                   collect(DISTINCT CASE
+                     WHEN toLower(prop) CONTAINS 'name'
+                       OR toLower(prop) CONTAINS 'label'
+                       OR toLower(prop) CONTAINS 'symbol'
+                     THEN {{key: prop, value: v}}
+                     ELSE NULL
+                   END) AS name_like
             """
             neighbor_result = self.neo4j_helper.execute(neighbor_query, top_k=500)
             neighbor_props = {}
+            neighbor_core = {}
             if neighbor_result and neighbor_result != "Given cypher query did not return any result":
                 for row in neighbor_result:
-                    label = row.get("label")
+                    labels = row.get("labels") or []
                     props = row.get("properties") or []
-                    if label:
-                        neighbor_props[label] = sorted(set(props))
+                    name_like = [x for x in (row.get("name_like") or []) if x]
+                    leaf_label = self._select_leaf_label(labels)
+                    if leaf_label:
+                        if props:
+                            neighbor_props[leaf_label] = sorted(set(props))
+                        if name_like:
+                            neighbor_core.setdefault(leaf_label, [])
+                            neighbor_core[leaf_label].extend(name_like)
 
             schema = {
                 "node_id": node_id,
@@ -361,8 +439,12 @@ class EntityCentricSchemaResolver:
                 "edges": edges,
                 "neighbor_node_properties": neighbor_props,
                 "core_values": {
-                    "id": node_id,
-                    "name_like": name_like,
+                    "node": {
+                        "id": node_id,
+                        "name_like": name_like,
+                    },
+                    "neighbors": neighbor_core,
+                    "edges": {},
                 },
             }
 
@@ -561,7 +643,8 @@ class EntityCentricSchemaResolver:
         lines.append(f"Target node: {node_type} id={node_id}")
 
         core_values = schema.get("core_values", {})
-        name_like = core_values.get("name_like") or []
+        node_values = core_values.get("node", {}) or {}
+        name_like = node_values.get("name_like") or []
         if name_like:
             lines.append("Target node name-like values:")
             for item in name_like:
@@ -588,6 +671,8 @@ class EntityCentricSchemaResolver:
                     if desc_props:
                         desc_values = self._edge_desc_samples(node_type, node_id, edge_type, desc_props)
                         if desc_values:
+                            core_values.setdefault("edges", {})
+                            core_values["edges"][edge_type] = desc_values
                             lines.append(f"  desc_values={desc_values}")
                 else:
                     lines.append(f"- {edge_str}")
@@ -598,6 +683,19 @@ class EntityCentricSchemaResolver:
             for label, props in sorted(neighbor_props.items()):
                 if props:
                     lines.append(f"- {label}: {sorted(props)}")
+
+        neighbor_core = core_values.get("neighbors", {}) or {}
+        if neighbor_core:
+            lines.append("Neighbor node name-like values:")
+            for label, items in sorted(neighbor_core.items()):
+                values = []
+                for item in items:
+                    key = item.get("key")
+                    value = item.get("value")
+                    if key and value is not None:
+                        values.append(f"{key}: {value}")
+                if values:
+                    lines.append(f"- {label}: {values}")
 
         return "\n".join(lines).strip()
 

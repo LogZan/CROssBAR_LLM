@@ -54,6 +54,14 @@ Relevance rule:
   (3) one supporting evidence property (e.g., EC number, GO term, keyword)
 Coverage target:
 - Aim to return 4–8 fields total, prioritizing relevance.
+Edge guidance:
+- When a relationship is used, return 1–2 relevant edge properties (if available in schema).
+Schema compliance:
+- Do not use any property/relationship headers that are not present in the provided schema or target context.
+Edge guidance:
+- When a relationship is used, return 1–2 relevant edge properties (if available in schema).
+Schema compliance:
+- Do not use any property/relationship headers that are not present in the provided schema or target context.
 Relevance rule:
 - Do not return a single property.
 - For classification questions, return:

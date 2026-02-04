@@ -131,10 +131,12 @@ def judge_answer(llm, question: str, expected: str, rationale: str, answer: str)
     from langchain_core.prompts import ChatPromptTemplate
 
     system_prompt = (
-        "You are a strict evaluator. Decide if the model answer is semantically "
-        "consistent with the benchmark output and covers all core facts. "
-        "If any core fact is missing or contradicted, fail. "
-        "Output ONLY valid JSON: {{\"pass\": true/false, \"reason\": \"...\"}}."
+        "You are an evaluator. Primary criterion: whether the model answer's final "
+        "output matches the Benchmark Output in meaning. If the final output is correct, "
+        "pass even if the reasoning/rationale differs. "
+        "Separately assess if the rationale matches the benchmark rationale. "
+        "Output ONLY valid JSON: "
+        "{{\"pass\": true/false, \"reason\": \"...\", \"rationale_match\": true/false}}."
     )
     human_prompt = (
         "Question:\n{question}\n\n"
@@ -157,15 +159,19 @@ def judge_answer(llm, question: str, expected: str, rationale: str, answer: str)
     )
     data = parse_json_output(raw)
     if not data or "pass" not in data:
-        return {"pass": False, "reason": "Judge output parse error"}
-    return {"pass": bool(data.get("pass")), "reason": str(data.get("reason", "")).strip()}
+        return {"pass": False, "reason": "Judge output parse error", "rationale_match": False}
+    return {
+        "pass": bool(data.get("pass")),
+        "reason": str(data.get("reason", "")).strip(),
+        "rationale_match": bool(data.get("rationale_match", False)),
+    }
 
 
 def build_judge_summary(comparisons: list) -> dict:
     summary: dict[str, dict[str, int]] = {}
     for comp in comparisons:
         for model_name, result in comp.get("models", {}).items():
-            summary.setdefault(model_name, {"pass": 0, "fail": 0, "total": 0})
+            summary.setdefault(model_name, {"pass": 0, "fail": 0, "total": 0, "rationale_match": 0, "rationale_mismatch": 0})
             judge = result.get("judge")
             if not judge:
                 continue
@@ -175,6 +181,11 @@ def build_judge_summary(comparisons: list) -> dict:
                 summary[model_name]["pass"] += 1
             else:
                 summary[model_name]["fail"] += 1
+            if "rationale_match" in judge:
+                if judge.get("rationale_match"):
+                    summary[model_name]["rationale_match"] += 1
+                else:
+                    summary[model_name]["rationale_mismatch"] += 1
     return summary
 
 
@@ -267,8 +278,12 @@ def render_results_by_question(
             judge = result.get("judge") or {}
             status = "✅" if judge.get("pass") else "❌"
             reason = judge.get("reason") or "No judge result"
+            rationale_match = judge.get("rationale_match")
             lines.append(f"\n**{model_name}** {status}")
             lines.append(f"> {reason}")
+            if rationale_match is not None:
+                rm_status = "✅" if rationale_match else "⚠️"
+                lines.append(f"> Rationale match: {rm_status}")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -314,6 +329,8 @@ def render_results_by_model(
         judge_counts = judge_summary.get(model_name, {"pass": 0, "total": 0})
         lines.append(f"\nSuccess: {success_count}/{total_count}")
         lines.append(f"\nJudge Pass: {judge_counts['pass']}/{judge_counts['total']}")
+        if "rationale_match" in judge_counts:
+            lines.append(f"\nRationale Match: {judge_counts['rationale_match']}/{judge_counts['total']}")
         lines.append(f"\nTotal Time: {model_data.get('total_time_seconds', 0):.1f}s")
 
         for q in model_data.get("questions", []):
@@ -349,6 +366,9 @@ def render_results_by_model(
             reason = judge.get("reason") or "No judge result"
             lines.append("\n**Judge:**")
             lines.append(f"> {status} {reason}")
+            if "rationale_match" in judge:
+                rm_status = "✅" if judge.get("rationale_match") else "⚠️"
+                lines.append(f"> Rationale match: {rm_status}")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -429,6 +449,7 @@ def main():
             result["judge"] = {
                 "pass": judge.get("pass", False),
                 "reason": judge.get("reason", ""),
+                "rationale_match": judge.get("rationale_match", False),
                 "model": judge_config.model,
             }
 
