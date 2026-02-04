@@ -144,6 +144,15 @@ class MultiStepConfig:
     min_results: int = 1
 
 
+@dataclass
+class JudgeConfig:
+    """Judge configuration."""
+    enabled: bool = True
+    model: str = "gpt-oss-120b"
+    temperature: float = 0
+    max_tokens: int = 256
+
+
 class BatchConfig:
     """
     Main configuration class with hot reload support.
@@ -164,6 +173,7 @@ class BatchConfig:
         self.output: OutputConfig = OutputConfig()
         self.hot_reload: HotReloadConfig = HotReloadConfig()
         self.multi_step: MultiStepConfig = MultiStepConfig()
+        self.judge: JudgeConfig = JudgeConfig()
         
         self.reload()
     
@@ -236,6 +246,15 @@ class BatchConfig:
                 max_steps=multi_step_data.get("max_steps", 5),
                 max_failures=multi_step_data.get("max_failures", 5),
                 min_results=multi_step_data.get("min_results", 1),
+            )
+
+            # Parse judge config
+            judge_data = data.get("judge", {}) or {}
+            self.judge = JudgeConfig(
+                enabled=judge_data.get("enabled", True),
+                model=judge_data.get("model", "gpt-oss-120b"),
+                temperature=judge_data.get("temperature", 0),
+                max_tokens=judge_data.get("max_tokens", 256),
             )
             
             self._config_hash = new_hash
@@ -379,6 +398,8 @@ class QuestionResult:
     resolver_used: Optional[bool] = None
     resolver_reason: Optional[str] = None
     resolver_detail: Optional[str] = None
+    # Judge result
+    judge: Optional[dict] = None
     # Multi-step trace
     multi_step_trace: list = field(default_factory=list)
     
@@ -407,6 +428,7 @@ class QuestionResult:
             "resolver_used": self.resolver_used,
             "resolver_reason": self.resolver_reason,
             "resolver_detail": self.resolver_detail,
+            "judge": self.judge,
             "multi_step_trace": self.multi_step_trace,
         }
 
@@ -459,6 +481,7 @@ class BatchPipeline:
         self.project_root = project_root
         self.logger = logger
         self._pipeline = None
+        self._judge_llm = None
         self._last_request_time: float = 0
         self._request_lock = threading.Lock()
     
@@ -477,6 +500,16 @@ class BatchPipeline:
                 f"Entity-centric resolver enabled: {resolver_enabled} (cache_dir={cache_dir})"
             )
         return self._pipeline
+
+    def _get_judge_llm(self):
+        if self._judge_llm is None:
+            from evaluate_results import get_llm
+            from models_config import ensure_models_registered
+
+            judge_cfg = self.config.judge
+            ensure_models_registered(self.config.provider, [judge_cfg.model])
+            self._judge_llm = get_llm(judge_cfg.model, judge_cfg.temperature, judge_cfg.max_tokens)
+        return self._judge_llm
     
     def _rate_limit(self):
         """Apply rate limiting between requests."""
@@ -803,6 +836,36 @@ class BatchPipeline:
                 result.answer_gen_time += time.time() - answer_start
                 result.natural_language_answer = answer
                 result.success = True
+
+                if self.config.judge.enabled:
+                    from evaluate_results import judge_answer, is_empty_answer
+                    judge_cfg = self.config.judge
+                    if is_empty_answer(answer):
+                        result.judge = {
+                            "pass": False,
+                            "reason": "Empty or N/A answer",
+                            "model": judge_cfg.model,
+                        }
+                    else:
+                        judge_llm = self._get_judge_llm()
+                        judge = judge_answer(
+                            judge_llm,
+                            question_text,
+                            result.benchmark_output or "",
+                            result.benchmark_rationale or "",
+                            answer,
+                        )
+                        result.judge = {
+                            "pass": judge.get("pass", False),
+                            "reason": judge.get("reason", ""),
+                            "rationale_match": judge.get("rationale_match", False),
+                            "raw": judge.get("raw", ""),
+                            "model": judge_cfg.model,
+                        }
+                    self.logger.info(
+                        f"  [{model_name}] Question {question_index} judge: pass={result.judge.get('pass')} "
+                        f"reason={result.judge.get('reason')}"
+                    )
             except Exception as e:
                 result.error = f"Answer generation error: {str(e)}"
             
