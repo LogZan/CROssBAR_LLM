@@ -646,6 +646,10 @@ class BatchPipeline:
                         "Generate an improved Cypher query."
                     )
 
+                self.logger.info(
+                    f"  [{model_name}] Question {question_index} step {step} start: "
+                    f"entity-centric enabled={pipeline.use_entity_centric_resolver}"
+                )
                 cypher_start = time.time()
                 success, query_or_error = self._execute_with_retry(
                     pipeline.run_for_query,
@@ -665,7 +669,7 @@ class BatchPipeline:
                 result.cypher_prompt_tokens = token_stats.get("cypher_prompt_tokens", 0)
                 result.cypher_output_tokens = token_stats.get("cypher_output_tokens", 0)
                 self.logger.info(
-                    f"  [{model_name}] Question {question_index} step {step}: "
+                    f"  [{model_name}] Question {question_index} step {step} end: "
                     f"entity-centric enabled={result.resolver_enabled} used={result.resolver_used} "
                     f"reason={result.resolver_reason} detail={result.resolver_detail}"
                 )
@@ -696,6 +700,8 @@ class BatchPipeline:
                 query = query_or_error
                 result.generated_query = query
                 last_cypher = query
+                self.logger.info(f"  [{model_name}] Question {question_index} step {step} cypher:")
+                self.logger.info(query)
 
                 try:
                     neo4j_start = time.time()
@@ -727,6 +733,14 @@ class BatchPipeline:
                     continue
 
                 last_result = query_result
+                try:
+                    self.logger.info(f"  [{model_name}] Question {question_index} step {step} result:")
+                    if isinstance(query_result, (list, dict)):
+                        self.logger.info(json.dumps(query_result, ensure_ascii=False, indent=2))
+                    else:
+                        self.logger.info(str(query_result))
+                except Exception:
+                    pass
                 count = self._count_results(query_result)
                 status = "ok" if count >= 1 else "empty"
                 if count == 0:
@@ -801,15 +815,6 @@ class BatchPipeline:
             self.logger.info("============================================================")
             self.logger.info(f"Question {question_index} (ID: {question_id})")
             self.logger.info(f"Question: {question_text}")
-            if result.generated_query:
-                self.logger.info("Generated Cypher:")
-                self.logger.info(result.generated_query)
-            if result.query_result is not None:
-                try:
-                    self.logger.info("Query Result:")
-                    self.logger.info(json.dumps(result.query_result, ensure_ascii=False, indent=2))
-                except Exception:
-                    self.logger.info(f"Query Result: {result.query_result}")
             if result.natural_language_answer:
                 self.logger.info("LLM Answer:")
                 self.logger.info(result.natural_language_answer)

@@ -237,7 +237,6 @@ class EntityCentricSchemaResolver:
             else:
                 response_text = str(response)
 
-            logging.info(f"Entity identification raw response: {response_text}")
             logging.getLogger("batch_pipeline").info(f"Entity identification raw response: {response_text}")
 
             # Parse JSON response
@@ -252,7 +251,6 @@ class EntityCentricSchemaResolver:
                 f"Entity identification parsed: confidence={entity_info.get('confidence')} "
                 f"entities={len(entity_info.get('entities') or [])}"
             )
-            logging.info(parsed_msg)
             logging.getLogger("batch_pipeline").info(parsed_msg)
             logging.info(f"Entity identification result: {entity_info}")
             return entity_info
@@ -286,7 +284,7 @@ class EntityCentricSchemaResolver:
         identifier = entity.get("identifier")
         name = entity.get("name")
 
-        logging.info(
+        logging.getLogger("batch_pipeline").info(
             f"Locating node for entity type={entity_type} "
             f"has_sequence={bool(sequence)} has_identifier={bool(identifier)} has_name={bool(name)}"
         )
@@ -295,15 +293,21 @@ class EntityCentricSchemaResolver:
         if sequence:
             node_info = self._find_node_by_sequence(sequence)
             if node_info:
+                logging.getLogger("batch_pipeline").info(
+                    f"Located node by sequence: id={node_info.get('id')} type={node_info.get('type')}"
+                )
                 return node_info
-            logging.info("Sequence match failed")
+            logging.getLogger("batch_pipeline").info("Sequence match failed")
 
         # Strategy 2: Property match (name or identifier)
         if identifier or name:
             node_id = self._find_node_by_property(identifier or name, entity_type)
             if node_id:
+                logging.getLogger("batch_pipeline").info(
+                    f"Located node by property: id={node_id} type={entity_type}"
+                )
                 return {"id": node_id, "type": entity_type}
-            logging.info("Property match failed")
+            logging.getLogger("batch_pipeline").info("Property match failed")
 
         logging.warning(f"Could not locate node for entity: {entity}")
         return None
@@ -753,9 +757,9 @@ class EntityCentricSchemaResolver:
             safe_id = node_id.replace(":", "_").replace("/", "_")
             cache_file = self.entity_cache_dir / f"{safe_id}.json"
 
+            logging.getLogger("batch_pipeline").info(f"Attempting cache lookup for node: {node_id}")
             if not cache_file.exists():
                 msg = f"Cache miss (file not found) for node: {node_id}"
-                logging.info(msg)
                 logging.getLogger("batch_pipeline").info(msg)
                 return None
 
@@ -768,7 +772,6 @@ class EntityCentricSchemaResolver:
 
             if age_hours > self.cache_ttl_hours:
                 msg = f"Cache expired for {node_id}, deleting"
-                logging.info(msg)
                 logging.getLogger("batch_pipeline").info(msg)
                 cache_file.unlink()
                 return None
@@ -776,12 +779,10 @@ class EntityCentricSchemaResolver:
             schema = cached.get("schema") or {}
             if "relations" not in schema:
                 msg = f"Cache schema format outdated for {node_id}, deleting"
-                logging.info(msg)
                 logging.getLogger("batch_pipeline").info(msg)
                 cache_file.unlink()
                 return None
             msg = f"Cache hit for node: {node_id} ({cache_file})"
-            logging.info(msg)
             logging.getLogger("batch_pipeline").info(msg)
             return schema
 

@@ -10,7 +10,8 @@ Anchor entities (use id when present):
 
 Rules (must follow):
 - Start with MATCH. Output ONLY Cypher (no markdown).
-- Use ONLY relationship types and properties that appear in the schema.
+- The goal is to retrieve rich, question-relevant context for reasoning, not to do logical filtering.
+- Use ONLY relationship types and properties that appear in the schema. 
 - Do NOT invent headers; do NOT use edge props on nodes or node props on edges.
 - Prefer anchor id matches over name/fuzzy.
 - Do not add directionality not shown in schema.

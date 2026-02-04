@@ -431,6 +431,7 @@ class QueryChain:
         if self.search_type == "db_search":
             anchor_entities = self._format_anchor_entities(schema_context)
             resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
+            logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (db_search)")
             prompt_text = CYPHER_GENERATION_PROMPT.format(
                 node_types=schema_context["nodes"],
                 node_properties=schema_context["node_properties"],
@@ -441,6 +442,7 @@ class QueryChain:
                 question=question,
             )
             self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
+            logging.getLogger("batch_pipeline").info("Cypher gen: invoking LLM")
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -460,6 +462,7 @@ class QueryChain:
                 .replace("''", "'")
                 .replace('""', '"')
             )
+            logging.getLogger("batch_pipeline").info("Cypher gen: raw LLM output received")
             self.generated_query = self._validate_or_retry_query(
                 self.generated_query, schema_context, prompt_text, question
             )
@@ -467,6 +470,7 @@ class QueryChain:
         elif self.search_type == "vector_search" and embedding is None:
             anchor_entities = self._format_anchor_entities(schema_context)
             resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
+            logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (vector_search)")
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
                 node_types=schema_context["nodes"],
@@ -478,6 +482,7 @@ class QueryChain:
                 question=question,
             )
             self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
+            logging.getLogger("batch_pipeline").info("Cypher gen: invoking LLM")
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -498,6 +503,7 @@ class QueryChain:
                 .replace("''", "'")
                 .replace('""', '"')
             )
+            logging.getLogger("batch_pipeline").info("Cypher gen: raw LLM output received")
             self.generated_query = self._validate_or_retry_query(
                 self.generated_query, schema_context, prompt_text, question
             )
@@ -505,6 +511,7 @@ class QueryChain:
         elif self.search_type == "vector_search" and embedding is not None:
             anchor_entities = self._format_anchor_entities(schema_context)
             resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
+            logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (vector_search + embedding)")
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
                 node_types=schema_context["nodes"],
@@ -517,6 +524,7 @@ class QueryChain:
             )
             self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
 
+            logging.getLogger("batch_pipeline").info("Cypher gen: invoking LLM")
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
@@ -537,6 +545,7 @@ class QueryChain:
                 .replace("''", "'")
                 .replace('""', '"')
             )
+            logging.getLogger("batch_pipeline").info("Cypher gen: raw LLM output received")
             self.generated_query = self._validate_or_retry_query(
                 self.generated_query, schema_context, prompt_text, question
             )
@@ -553,10 +562,12 @@ class QueryChain:
 
         self.last_cypher_output_tokens = _count_tokens(self.generated_query)
 
+        logging.getLogger("batch_pipeline").info("Cypher gen: correcting query")
         corrected_query = correct_query(
             query=self.generated_query, edge_schema=schema_context
         )
 
+        logging.getLogger("batch_pipeline").info("Cypher gen: enforcing anchor")
         enforced_query = self._enforce_anchor_query(corrected_query, schema_context)
         if enforced_query != corrected_query:
             logging.info("Anchor enforcement applied to Cypher query")
