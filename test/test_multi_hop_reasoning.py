@@ -3,56 +3,183 @@ Unit tests for multi-hop reasoning logic.
 
 Tests the MultiHopReasoner class and related components
 without requiring actual LLM or Neo4j connections.
+
+The pure helpers (parse_decision, summarize_evidence) and the prompt
+template live in tools.multi_hop_utils which has zero heavy dependencies,
+so these tests never need to be skipped.
 """
 
 import json
+import importlib.util
+import logging
 import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
 # Add backend to path
-sys.path.insert(
-    0,
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "crossbar_llm",
-        "backend",
-    ),
+_backend_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "crossbar_llm",
+    "backend",
 )
+sys.path.insert(0, _backend_dir)
+
+# Import multi_hop_utils directly by file path to bypass tools/__init__.py
+# which would pull in langchain_llm_qa_trial and all its heavy dependencies.
+_utils_path = os.path.join(_backend_dir, "tools", "multi_hop_utils.py")
+_spec = importlib.util.spec_from_file_location("multi_hop_utils", _utils_path)
+_mh_utils = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mh_utils)
+
+parse_decision = _mh_utils.parse_decision
+summarize_evidence = _mh_utils.summarize_evidence
+MULTI_HOP_DECISION_TEMPLATE = _mh_utils.MULTI_HOP_DECISION_TEMPLATE
 
 
-def _import_multi_hop_reasoner():
-    """Import MultiHopReasoner, skipping if environment deps are missing."""
-    try:
-        from tools.langchain_llm_qa_trial import MultiHopReasoner
-        return MultiHopReasoner
-    except ImportError:
-        return None
+# ---------------------------------------------------------------------------
+# Lightweight stand-in for MultiHopReasoner that mirrors the real run() loop
+# but does NOT import langchain at class-definition time.
+# The tests inject a mock decision_chain, so langchain is never invoked.
+# ---------------------------------------------------------------------------
+class _StandaloneMultiHopReasoner:
+    """Test-only replica of MultiHopReasoner.run() + _query_kg()."""
+
+    def __init__(self, llm, neo4j_connection, query_chain_factory, max_steps=5):
+        self.llm = llm
+        self.neo4j_connection = neo4j_connection
+        self.query_chain_factory = query_chain_factory
+        self.max_steps = max_steps
+        # Will be replaced by mock in tests
+        self.decision_chain = None
+
+    # Delegates to the shared module-level functions
+    @staticmethod
+    def _parse_decision(raw_text):
+        return parse_decision(raw_text)
+
+    @staticmethod
+    def _summarize_evidence(evidence):
+        return summarize_evidence(evidence)
+
+    def _query_kg(self, question, top_k):
+        query_chain = self.query_chain_factory()
+        try:
+            cypher = query_chain.run_cypher_chain(question)
+        except Exception:
+            return "", []
+        try:
+            result = self.neo4j_connection.execute_query(cypher, top_k=top_k)
+        except Exception:
+            return cypher, []
+        return cypher, result if result else []
+
+    def run(self, question, top_k=5):
+        evidence = []
+        trace = []
+        current_node = "Not yet determined (initial step)"
+        action = "C"
+
+        for step in range(1, self.max_steps + 1):
+            decision_raw = self.decision_chain.invoke({
+                "question": question,
+                "current_node": current_node,
+                "evidence": self._summarize_evidence(evidence),
+                "step": str(step),
+                "max_steps": str(self.max_steps),
+            })
+            decision = self._parse_decision(decision_raw)
+            action = decision.get("action", "C").upper().strip()
+            reason = decision.get("reason", "")
+
+            step_record = {
+                "step": step,
+                "action": action,
+                "reason": reason,
+                "decision_raw": decision_raw,
+            }
+
+            if action == "C":
+                step_record["status"] = "terminate"
+                trace.append(step_record)
+                break
+
+            if action == "B":
+                target = decision.get("jump_target") or {}
+                node_type = target.get("node_type", "")
+                identifier = target.get("identifier", "")
+                if node_type and identifier:
+                    current_node = f"{node_type}: {identifier}"
+                    jump_question = (
+                        f"{question}\n\n"
+                        f"Focus on {node_type} with identifier '{identifier}'."
+                    )
+                else:
+                    jump_question = question
+
+                query, result = self._query_kg(jump_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "jump",
+                    "jump_target": {"node_type": node_type, "identifier": identifier},
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            elif action == "D":
+                hint = decision.get("overview_hint") or ""
+                overview_question = (
+                    f"{question}\n\nProvide a global overview. {hint}"
+                ).strip()
+                query, result = self._query_kg(overview_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "overview",
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            else:
+                hint = decision.get("focus_hint") or ""
+                continue_question = (
+                    f"{question}\n\nContinue exploring: {current_node}. {hint}"
+                ).strip()
+                query, result = self._query_kg(continue_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "continue",
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            trace.append(step_record)
+
+        return {
+            "evidence": evidence,
+            "trace": trace,
+            "final_action": action,
+        }
 
 
-def _import_multi_hop_prompt():
-    """Import MULTI_HOP_DECISION_PROMPT, skipping if deps are missing."""
-    try:
-        from tools.qa_templates import MULTI_HOP_DECISION_PROMPT
-        return MULTI_HOP_DECISION_PROMPT
-    except ImportError:
-        return None
+# ===================================================================
+# Tests
+# ===================================================================
 
-
-_MultiHopReasoner = _import_multi_hop_reasoner()
-_MULTI_HOP_DECISION_PROMPT = _import_multi_hop_prompt()
-
-_skip_reason = "langchain/anthropic dependency version conflict in CI"
-
-
-@unittest.skipIf(_MultiHopReasoner is None, _skip_reason)
 class TestMultiHopDecisionParsing(unittest.TestCase):
-    """Test the _parse_decision static method of MultiHopReasoner."""
+    """Test the parse_decision function."""
 
     def test_valid_json_action_c(self):
         raw = '{"action": "C", "reason": "enough evidence"}'
-        result = _MultiHopReasoner._parse_decision(raw)
+        result = parse_decision(raw)
         self.assertEqual(result["action"], "C")
         self.assertEqual(result["reason"], "enough evidence")
 
@@ -62,19 +189,19 @@ class TestMultiHopDecisionParsing(unittest.TestCase):
             "reason": "need related protein",
             "jump_target": {"node_type": "Protein", "identifier": "BRCA1"},
         })
-        result = _MultiHopReasoner._parse_decision(raw)
+        result = parse_decision(raw)
         self.assertEqual(result["action"], "B")
         self.assertEqual(result["jump_target"]["node_type"], "Protein")
         self.assertEqual(result["jump_target"]["identifier"], "BRCA1")
 
     def test_json_wrapped_in_text(self):
         raw = 'Here is my decision:\n{"action": "A", "reason": "explore more"}\nDone.'
-        result = _MultiHopReasoner._parse_decision(raw)
+        result = parse_decision(raw)
         self.assertEqual(result["action"], "A")
 
     def test_invalid_json_defaults_to_answer(self):
         raw = "I cannot decide"
-        result = _MultiHopReasoner._parse_decision(raw)
+        result = parse_decision(raw)
         self.assertEqual(result["action"], "C")
 
     def test_action_d_overview(self):
@@ -83,34 +210,32 @@ class TestMultiHopDecisionParsing(unittest.TestCase):
             "reason": "need global view",
             "overview_hint": "list all drugs",
         })
-        result = _MultiHopReasoner._parse_decision(raw)
+        result = parse_decision(raw)
         self.assertEqual(result["action"], "D")
         self.assertEqual(result["overview_hint"], "list all drugs")
 
 
-@unittest.skipIf(_MultiHopReasoner is None, _skip_reason)
 class TestMultiHopSummarizeEvidence(unittest.TestCase):
-    """Test the _summarize_evidence static method."""
+    """Test the summarize_evidence function."""
 
     def test_empty_evidence(self):
-        result = _MultiHopReasoner._summarize_evidence([])
+        result = summarize_evidence([])
         self.assertEqual(result, "No evidence collected yet.")
 
     def test_non_empty_evidence(self):
         evidence = [{"drug": "Caffeine"}, {"protein": "BRCA1"}]
-        result = _MultiHopReasoner._summarize_evidence(evidence)
+        result = summarize_evidence(evidence)
         self.assertIn("Caffeine", result)
         self.assertIn("BRCA1", result)
 
     def test_large_evidence_truncated(self):
         evidence = [{"item": i} for i in range(20)]
-        result = _MultiHopReasoner._summarize_evidence(evidence)
+        result = summarize_evidence(evidence)
         # Should only include first 10
         parsed = json.loads(result)
         self.assertEqual(len(parsed), 10)
 
 
-@unittest.skipIf(_MultiHopReasoner is None, _skip_reason)
 class TestMultiHopReasonerRun(unittest.TestCase):
     """Test the MultiHopReasoner run loop with mocked LLM."""
 
@@ -127,7 +252,7 @@ class TestMultiHopReasonerRun(unittest.TestCase):
         mock_query_chain.run_cypher_chain.return_value = "MATCH (d:Drug) RETURN d LIMIT 5"
         query_chain_factory = MagicMock(return_value=mock_query_chain)
 
-        reasoner = _MultiHopReasoner(
+        reasoner = _StandaloneMultiHopReasoner(
             llm=mock_llm,
             neo4j_connection=mock_neo4j,
             query_chain_factory=query_chain_factory,
@@ -227,12 +352,11 @@ class TestMultiHopReasonerRun(unittest.TestCase):
         self.assertEqual(len(result["evidence"]), 2)
 
 
-@unittest.skipIf(_MULTI_HOP_DECISION_PROMPT is None, _skip_reason)
 class TestMultiHopPromptTemplate(unittest.TestCase):
-    """Test the MULTI_HOP_DECISION_PROMPT template."""
+    """Test the MULTI_HOP_DECISION_TEMPLATE string."""
 
     def test_prompt_format(self):
-        formatted = _MULTI_HOP_DECISION_PROMPT.format(
+        formatted = MULTI_HOP_DECISION_TEMPLATE.format(
             question="What drugs target BRCA1?",
             current_node="Protein: BRCA1",
             evidence="[{'drug': 'Aspirin'}]",

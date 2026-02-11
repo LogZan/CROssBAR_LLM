@@ -29,7 +29,8 @@ class AnswerEvaluator:
         question: str,
         model_answer: str,
         expected: str = "",
-        rationale: str = ""
+        rationale: str = "",
+        trace: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
         Evaluate a model answer against expected output.
@@ -39,6 +40,7 @@ class AnswerEvaluator:
             model_answer: The model's answer to evaluate
             expected: Expected/benchmark answer
             rationale: Expected reasoning/rationale
+            trace: Optional multi-hop reasoning trace (list of step dicts)
 
         Returns:
             Evaluation result with pass/fail, scores, and explanation
@@ -55,7 +57,7 @@ class AnswerEvaluator:
             }
 
         # Build evaluation prompt
-        prompt = self._build_evaluation_prompt(question, model_answer, expected, rationale)
+        prompt = self._build_evaluation_prompt(question, model_answer, expected, rationale, trace=trace)
 
         # Get LLM judgment
         try:
@@ -97,7 +99,8 @@ class AnswerEvaluator:
         question: str,
         model_answer: str,
         expected: str,
-        rationale: str
+        rationale: str,
+        trace: Optional[list] = None,
     ) -> str:
         """
         Build the evaluation prompt for the LLM judge.
@@ -107,6 +110,7 @@ class AnswerEvaluator:
             model_answer: Model's answer
             expected: Expected answer
             rationale: Expected rationale
+            trace: Optional multi-hop reasoning trace (list of step dicts)
 
         Returns:
             Formatted prompt string
@@ -144,9 +148,34 @@ class AnswerEvaluator:
             "Model Answer:\n{answer}\n"
         )
 
+        formatted_human = human_prompt.format(
+            question=question,
+            expected=expected or '',
+            rationale=rationale or '',
+            answer=model_answer or '',
+        )
+
+        # Append multi-hop trace summary when available
+        if trace:
+            trace_lines = []
+            for step in trace:
+                if not isinstance(step, dict):
+                    continue
+                action = step.get("action", "?")
+                reason = step.get("reason", "")
+                status = step.get("status", "")
+                step_num = step.get("step", "?")
+                trace_lines.append(f"  Step {step_num}: action={action} status={status} reason={reason}")
+            if trace_lines:
+                formatted_human += (
+                    "\nMulti-Hop Reasoning Trace:\n"
+                    + "\n".join(trace_lines)
+                    + "\n"
+                )
+
         full_prompt = (
             f"System: {system_prompt}\n\n"
-            f"Human: {human_prompt.format(question=question, expected=expected or '', rationale=rationale or '', answer=model_answer or '')}"
+            f"Human: {formatted_human}"
         )
 
         return full_prompt
@@ -270,7 +299,8 @@ class AnswerEvaluator:
                 question=item.get("question", ""),
                 model_answer=item.get("model_answer", ""),
                 expected=item.get("expected", ""),
-                rationale=item.get("rationale", "")
+                rationale=item.get("rationale", ""),
+                trace=item.get("trace"),
             )
             results.append(result)
         return results

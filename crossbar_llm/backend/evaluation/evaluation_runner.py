@@ -52,6 +52,7 @@ class EvaluationRunner:
         question = question_data["question"]
         question_index = question_data["question_index"]
         question_id = question_data["question_id"]
+        is_multi_hop = question_data.get("multi_hop", False)
 
         # Run model inference
         try:
@@ -72,6 +73,7 @@ class EvaluationRunner:
             "question": question,
             "expected": question_data.get("expected", ""),
             "rationale": question_data.get("rationale", ""),
+            "multi_hop": is_multi_hop,
             "model_name": self.model_name,
             "success": success,
             "error": error,
@@ -86,6 +88,13 @@ class EvaluationRunner:
             "query_result": model_output.get("query_result"),
             "metadata": model_output.get("metadata", {}),
         })
+
+        # Add multi-hop specific fields if present
+        if is_multi_hop or "evidence" in model_output or "trace" in model_output:
+            result["multi_hop"] = True
+            result["evidence"] = model_output.get("evidence", [])
+            result["trace"] = model_output.get("trace", [])
+            result["hop_count"] = len(model_output.get("trace", []))
 
         return result
 
