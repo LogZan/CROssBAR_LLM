@@ -151,6 +151,7 @@ class TestEvaluationRunnerMultiHop(unittest.TestCase):
         self.assertFalse(result["multi_hop"])
         self.assertNotIn("trace", result)
         self.assertNotIn("evidence", result)
+        self.assertNotIn("hop_count", result)
 
     def test_batch_with_mixed_questions(self):
         """Batch should handle a mix of multi-hop and normal questions."""

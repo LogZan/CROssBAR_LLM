@@ -159,15 +159,19 @@ class AnswerEvaluator:
         if trace:
             trace_lines = []
             for step in trace:
+                if not isinstance(step, dict):
+                    continue
                 action = step.get("action", "?")
                 reason = step.get("reason", "")
                 status = step.get("status", "")
-                trace_lines.append(f"  Step {step.get('step', '?')}: action={action} status={status} reason={reason}")
-            formatted_human += (
-                "\nMulti-Hop Reasoning Trace:\n"
-                + "\n".join(trace_lines)
-                + "\n"
-            )
+                step_num = step.get("step", "?")
+                trace_lines.append(f"  Step {step_num}: action={action} status={status} reason={reason}")
+            if trace_lines:
+                formatted_human += (
+                    "\nMulti-Hop Reasoning Trace:\n"
+                    + "\n".join(trace_lines)
+                    + "\n"
+                )
 
         full_prompt = (
             f"System: {system_prompt}\n\n"
