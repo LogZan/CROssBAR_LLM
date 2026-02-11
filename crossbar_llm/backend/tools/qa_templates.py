@@ -330,35 +330,7 @@ ANSWER_SUFFICIENCY_PROMPT = PromptTemplate(
 )
 
 
-MULTI_HOP_DECISION_TEMPLATE = """Task: You are a knowledge graph reasoning agent performing multi-hop reasoning.
-Based on the original question, the current node context, and accumulated evidence so far,
-choose ONE of the following actions:
-
-A. CONTINUE - Continue exploring the current node to gather more information (e.g., different properties or relationships).
-B. JUMP - Jump to a different node to explore related information. You MUST specify which node to jump to (provide type and identifier).
-C. ANSWER - Sufficient evidence has been collected. Terminate and produce the final answer.
-D. OVERVIEW - Do not focus on any specific node. Instead, perform a global overview query across the knowledge graph.
-
-Instructions:
-- Only output JSON, no markdown.
-- For option B, you MUST provide "jump_target" with "node_type" and "identifier".
-- For option A, optionally suggest "focus_hint" to guide what aspect to explore next.
-- For option D, optionally suggest "overview_hint" to guide what global pattern to look for.
-
-Return exactly one JSON object:
-{{"action": "A" or "B" or "C" or "D", "reason": "...", "jump_target": {{"node_type": "...", "identifier": "..."}} or null, "focus_hint": "..." or null, "overview_hint": "..." or null}}
-
-Original Question:
-{question}
-
-Current Node Context:
-{current_node}
-
-Accumulated Evidence (from previous hops):
-{evidence}
-
-Step {step} of maximum {max_steps} steps.
-"""
+from .multi_hop_utils import MULTI_HOP_DECISION_TEMPLATE  # noqa: E402 – single source of truth
 
 MULTI_HOP_DECISION_PROMPT = PromptTemplate(
     input_variables=["question", "current_node", "evidence", "step", "max_steps"],

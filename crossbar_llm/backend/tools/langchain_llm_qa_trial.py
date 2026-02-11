@@ -29,6 +29,8 @@ from .qa_templates import (
     VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
     MULTI_HOP_DECISION_PROMPT,
 )
+from .multi_hop_utils import parse_decision as _mh_parse_decision
+from .multi_hop_utils import summarize_evidence as _mh_summarize_evidence
 from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import Ollama, Replicate
@@ -793,31 +795,17 @@ class MultiHopReasoner:
         self.decision_chain = MULTI_HOP_DECISION_PROMPT | llm | StrOutputParser()
 
     # ------------------------------------------------------------------
-    # helpers
+    # helpers – delegate to lightweight multi_hop_utils module
     # ------------------------------------------------------------------
     @staticmethod
     def _parse_decision(raw_text: str) -> dict:
         """Parse the LLM decision JSON, tolerating minor formatting issues."""
-        try:
-            return json.loads(raw_text)
-        except Exception:
-            pass
-        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except Exception:
-                pass
-        return {"action": "C", "reason": "Failed to parse decision, defaulting to ANSWER"}
+        return _mh_parse_decision(raw_text)
 
     @staticmethod
     def _summarize_evidence(evidence: list) -> str:
-        if not evidence:
-            return "No evidence collected yet."
-        try:
-            return json.dumps(evidence[:10], ensure_ascii=False, indent=1)
-        except Exception:
-            return str(evidence[:10])
+        """Summarize collected evidence for the prompt context."""
+        return _mh_summarize_evidence(evidence)
 
     # ------------------------------------------------------------------
     # core loop
