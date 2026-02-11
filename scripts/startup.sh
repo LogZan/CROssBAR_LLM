@@ -3,12 +3,15 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Run backend
+# Run backend in the background
 cd "$PROJECT_ROOT/crossbar_llm/backend"
-# uvicorn main:app --host 0.0.0.0 --port 8000 --root-path "$REACT_APP_CROSSBAR_LLM_ROOT_PATH/api" &
-bash run_backend.sh
+bash run_backend.sh &
+BACKEND_PID=$!
 
-# Run frontend
+# Run frontend in the foreground (keeps the container / script alive)
 cd "$PROJECT_ROOT/crossbar_llm/frontend"
-# static-web-server --host 0.0.0.0 --port 8501
-bash run_frontend.sh
+bash run_frontend.sh &
+FRONTEND_PID=$!
+
+# Wait for both processes; if either exits the script exits
+wait -n $BACKEND_PID $FRONTEND_PID 2>/dev/null || wait $BACKEND_PID $FRONTEND_PID
