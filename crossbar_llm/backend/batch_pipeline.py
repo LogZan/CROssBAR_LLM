@@ -145,6 +145,13 @@ class MultiStepConfig:
 
 
 @dataclass
+class MultiHopConfig:
+    """Multi-hop reasoning configuration."""
+    enabled: bool = False
+    max_steps: int = 5
+
+
+@dataclass
 class JudgeConfig:
     """Judge configuration."""
     enabled: bool = True
@@ -173,6 +180,7 @@ class BatchConfig:
         self.output: OutputConfig = OutputConfig()
         self.hot_reload: HotReloadConfig = HotReloadConfig()
         self.multi_step: MultiStepConfig = MultiStepConfig()
+        self.multi_hop: MultiHopConfig = MultiHopConfig()
         self.judge: JudgeConfig = JudgeConfig()
         
         self.reload()
@@ -246,6 +254,13 @@ class BatchConfig:
                 max_steps=multi_step_data.get("max_steps", 5),
                 max_failures=multi_step_data.get("max_failures", 5),
                 min_results=multi_step_data.get("min_results", 1),
+            )
+
+            # Parse multi-hop reasoning config
+            multi_hop_data = data.get("multi_hop", {})
+            self.multi_hop = MultiHopConfig(
+                enabled=multi_hop_data.get("enabled", False),
+                max_steps=multi_hop_data.get("max_steps", 5),
             )
 
             # Parse judge config
@@ -653,6 +668,59 @@ class BatchPipeline:
                 cypher_llm = pipeline.llm
                 qa_llm = pipeline.llm
 
+            # --- Multi-hop reasoning path ---
+            multi_hop_cfg = self.config.multi_hop
+            if multi_hop_cfg.enabled:
+                self.logger.info(
+                    f"  [{model_name}] Question {question_index}: "
+                    f"using multi-hop reasoning (max_steps={multi_hop_cfg.max_steps})"
+                )
+                hop_start = time.time()
+                hop_result = pipeline.run_multi_hop(
+                    question=question_text,
+                    max_steps=multi_hop_cfg.max_steps,
+                    reset_llm_type=True,
+                    model_name=model_name,
+                )
+                hop_time = time.time() - hop_start
+
+                result.multi_step_trace = hop_result.get("trace", [])
+                result.query_result = hop_result.get("evidence", [])
+                result.natural_language_answer = hop_result.get("answer", "")
+                result.execution_time_seconds = hop_time
+                result.success = True
+
+                if self.config.judge.enabled:
+                    from evaluate_results import judge_answer, is_empty_answer
+                    judge_cfg = self.config.judge
+                    answer = result.natural_language_answer
+                    if is_empty_answer(answer):
+                        result.judge = {
+                            "pass": False,
+                            "reason": "Empty or N/A answer",
+                            "model": judge_cfg.model,
+                        }
+                    else:
+                        judge_llm = self._get_judge_llm()
+                        judge = judge_answer(
+                            judge_llm,
+                            question_text,
+                            result.benchmark_output or "",
+                            result.benchmark_rationale or "",
+                            answer,
+                        )
+                        result.judge = {
+                            "pass": judge.get("pass", False),
+                            "reason": judge.get("reason", ""),
+                            "rationale_match": judge.get("rationale_match", False),
+                            "raw": judge.get("raw", ""),
+                            "model": judge_cfg.model,
+                        }
+
+                result.execution_time_seconds = time.time() - start_time
+                return result
+
+            # --- Original multi-step path ---
             multi_cfg = self.config.multi_step
             aggregated_results: list = []
             last_cypher = None

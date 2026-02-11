@@ -27,6 +27,7 @@ from .qa_templates import (
     CYPHER_GENERATION_PROMPT,
     CYPHER_OUTPUT_PARSER_PROMPT,
     VECTOR_SEARCH_CYPHER_GENERATION_PROMPT,
+    MULTI_HOP_DECISION_PROMPT,
 )
 from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
@@ -762,6 +763,197 @@ class QueryChain:
         return query[: match.start()] + replacement + query[match.end():]
 
 
+class MultiHopReasoner:
+    """
+    Multi-hop reasoning engine for knowledge graph exploration.
+
+    At each step the LLM chooses one of four actions:
+      A. CONTINUE – keep exploring the current node (different properties / edges).
+      B. JUMP     – move to a different node (type + identifier supplied by LLM).
+      C. ANSWER   – stop and produce the final answer.
+      D. OVERVIEW – run a global / cross-node query.
+
+    The accumulated evidence and conversation context are carried forward
+    across hops so the LLM can make informed decisions.
+    """
+
+    def __init__(
+        self,
+        llm,
+        neo4j_connection,
+        query_chain_factory,
+        max_steps: int = 5,
+        search_type: str = "db_search",
+    ):
+        self.llm = llm
+        self.neo4j_connection = neo4j_connection
+        self.query_chain_factory = query_chain_factory
+        self.max_steps = max_steps
+        self.search_type = search_type
+        self.decision_chain = MULTI_HOP_DECISION_PROMPT | llm | StrOutputParser()
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_decision(raw_text: str) -> dict:
+        """Parse the LLM decision JSON, tolerating minor formatting issues."""
+        try:
+            return json.loads(raw_text)
+        except Exception:
+            pass
+        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+        return {"action": "C", "reason": "Failed to parse decision, defaulting to ANSWER"}
+
+    @staticmethod
+    def _summarize_evidence(evidence: list) -> str:
+        if not evidence:
+            return "No evidence collected yet."
+        try:
+            return json.dumps(evidence[:10], ensure_ascii=False, indent=1)
+        except Exception:
+            return str(evidence[:10])
+
+    # ------------------------------------------------------------------
+    # core loop
+    # ------------------------------------------------------------------
+    def run(self, question: str, top_k: int = 5) -> dict:
+        """
+        Execute multi-hop reasoning.
+
+        Returns a dict with keys:
+            - evidence   : list of all collected KG results
+            - trace      : list[dict] per-step trace
+            - final_action : the terminal action letter
+        """
+        evidence: list = []
+        trace: list = []
+        current_node: str = "Not yet determined (initial step)"
+
+        for step in range(1, self.max_steps + 1):
+            # --- 1. ask the LLM what to do ---
+            decision_raw = self.decision_chain.invoke({
+                "question": question,
+                "current_node": current_node,
+                "evidence": self._summarize_evidence(evidence),
+                "step": str(step),
+                "max_steps": str(self.max_steps),
+            })
+            decision = self._parse_decision(decision_raw)
+            action = decision.get("action", "C").upper().strip()
+            reason = decision.get("reason", "")
+
+            logging.info(
+                f"MultiHopReasoner step {step}/{self.max_steps}: "
+                f"action={action} reason={reason}"
+            )
+
+            step_record = {
+                "step": step,
+                "action": action,
+                "reason": reason,
+                "decision_raw": decision_raw,
+            }
+
+            # --- 2. act on the decision ---
+            if action == "C":
+                # ANSWER – stop
+                step_record["status"] = "terminate"
+                trace.append(step_record)
+                break
+
+            if action == "B":
+                # JUMP to a different node
+                target = decision.get("jump_target") or {}
+                node_type = target.get("node_type", "")
+                identifier = target.get("identifier", "")
+                if node_type and identifier:
+                    current_node = f"{node_type}: {identifier}"
+                    jump_question = (
+                        f"{question}\n\n"
+                        f"Focus on {node_type} with identifier '{identifier}'."
+                    )
+                else:
+                    jump_question = question
+
+                query, result = self._query_kg(jump_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "jump",
+                    "jump_target": {"node_type": node_type, "identifier": identifier},
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            elif action == "D":
+                # OVERVIEW – global query
+                hint = decision.get("overview_hint") or ""
+                overview_question = (
+                    f"{question}\n\n"
+                    f"Provide a global overview. {hint}"
+                ).strip()
+                query, result = self._query_kg(overview_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "overview",
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            else:
+                # A  CONTINUE on the same node
+                hint = decision.get("focus_hint") or ""
+                continue_question = (
+                    f"{question}\n\n"
+                    f"Continue exploring: {current_node}. {hint}"
+                ).strip()
+                query, result = self._query_kg(continue_question, top_k)
+                step_record.update({
+                    "cypher": query,
+                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                    "status": "continue",
+                })
+                if isinstance(result, list):
+                    evidence.extend(result)
+                elif result:
+                    evidence.append(result)
+
+            trace.append(step_record)
+
+        return {
+            "evidence": evidence,
+            "trace": trace,
+            "final_action": action if 'action' in dir() else "C",
+        }
+
+    # ------------------------------------------------------------------
+    def _query_kg(self, question: str, top_k: int) -> tuple:
+        """Generate a Cypher query and execute it, returning (cypher, result)."""
+        query_chain = self.query_chain_factory()
+        try:
+            cypher = query_chain.run_cypher_chain(question)
+        except Exception as e:
+            logging.warning(f"MultiHopReasoner cypher generation failed: {e}")
+            return "", []
+        try:
+            result = self.neo4j_connection.execute_query(cypher, top_k=top_k)
+        except Exception as e:
+            logging.warning(f"MultiHopReasoner query execution failed: {e}")
+            return cypher, []
+        return cypher, result if result else []
+
+
 class RunPipeline:
 
     def __init__(
@@ -1121,6 +1313,85 @@ class RunPipeline:
         )
 
         return final_output
+
+    def _make_query_chain_factory(self):
+        """Return a zero-arg callable that creates a fresh QueryChain."""
+        def factory():
+            if isinstance(self.llm, dict):
+                return QueryChain(
+                    cypher_llm=self.llm["cypher_llm"],
+                    qa_llm=self.llm["qa_llm"],
+                    schema=self.neo4j_connection.schema,
+                    search_type=self.search_type,
+                    use_entity_centric_resolver=self.use_entity_centric_resolver,
+                    resolver_config=self.resolver_config,
+                    neo4j_helper=self.neo4j_connection.graph_helper,
+                )
+            return QueryChain(
+                cypher_llm=self.llm,
+                qa_llm=self.llm,
+                schema=self.neo4j_connection.schema,
+                search_type=self.search_type,
+                use_entity_centric_resolver=self.use_entity_centric_resolver,
+                resolver_config=self.resolver_config,
+                neo4j_helper=self.neo4j_connection.graph_helper,
+            )
+        return factory
+
+    def run_multi_hop(
+        self,
+        question: str,
+        max_steps: int = 5,
+        reset_llm_type: bool = False,
+        model_name: Union[
+            str, list[str], dict[Literal["cypher_llm_model", "qa_llm_model"], str]
+        ] = None,
+    ) -> dict:
+        """
+        Run multi-hop reasoning over the KG.
+
+        At each hop the LLM decides to:
+          A. continue exploring the current node,
+          B. jump to another node,
+          C. stop and answer, or
+          D. run a global overview query.
+
+        Returns a dict with keys: evidence, trace, answer.
+        """
+        if reset_llm_type and model_name:
+            self.define_llm(model_name=model_name)
+
+        logging.info(f"Starting multi-hop reasoning for: {question}")
+
+        decision_llm = self.llm["cypher_llm"] if isinstance(self.llm, dict) else self.llm
+        qa_llm = self.llm["qa_llm"] if isinstance(self.llm, dict) else self.llm
+
+        reasoner = MultiHopReasoner(
+            llm=decision_llm,
+            neo4j_connection=self.neo4j_connection,
+            query_chain_factory=self._make_query_chain_factory(),
+            max_steps=max_steps,
+            search_type=self.search_type,
+        )
+
+        hop_result = reasoner.run(question, top_k=self.top_k)
+
+        # Generate final natural-language answer from accumulated evidence
+        evidence = hop_result.get("evidence", [])
+        qa_chain = CYPHER_OUTPUT_PARSER_PROMPT | qa_llm | StrOutputParser()
+        final_output = evidence if evidence else "Given cypher query did not return any result"
+        answer = qa_chain.invoke({
+            "output": final_output,
+            "input_question": question,
+        }).strip("\n")
+
+        logging.info(f"Multi-hop reasoning completed. Steps: {len(hop_result['trace'])}")
+
+        return {
+            "evidence": evidence,
+            "trace": hop_result["trace"],
+            "answer": answer,
+        }
 
     def create_dataframe_from_outputs(self) -> pd.DataFrame:
         df = pd.DataFrame(
