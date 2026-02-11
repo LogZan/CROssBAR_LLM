@@ -4,19 +4,22 @@ Evaluate batch results using an LLM-as-judge.
 
 Reads results_summary.json produced by compare_results.py, adds judge results,
 and updates results_summary.json, results_by_question.md, results_by_model.md.
+
+Uses the evaluation.AnswerEvaluator module for LLM-as-judge logic to avoid
+code duplication.
 """
 
 import argparse
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
 from compare_results import ResultComparator, find_latest_run
+from evaluation.answer_evaluator import AnswerEvaluator
 from models_config import ensure_models_registered, get_provider_for_model_name
 from tools.utils import Logger
 
@@ -102,105 +105,38 @@ def get_llm(model_name: str, temperature: float, max_tokens: int):
     return llm
 
 
-def is_empty_answer(answer: Optional[str]) -> bool:
-    if answer is None:
-        return True
-    text = str(answer).strip()
-    if not text:
-        return True
-    return text.lower() in {"n/a", "na"}
+def _make_llm_judge_fn(llm):
+    """
+    Create a judge function compatible with AnswerEvaluator from a LangChain LLM.
 
+    Args:
+        llm: A LangChain LLM instance
 
-def parse_json_output(text: str) -> dict:
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # Common fixes: single quotes, Python booleans, trailing commas
-    fixed = text.strip()
-    if fixed.startswith("```"):
-        fixed = fixed.strip("`")
-    fixed = re.sub(r"\bTrue\b", "true", fixed)
-    fixed = re.sub(r"\bFalse\b", "false", fixed)
-    fixed = re.sub(r"'", "\"", fixed)
-    fixed = re.sub(r",\s*}", "}", fixed)
-    fixed = re.sub(r",\s*\]", "]", fixed)
-    # Repair unterminated JSON strings/braces
-    if fixed.count("{") > fixed.count("}"):
-        fixed += "}"
-    if fixed.count("\"") % 2 == 1:
-        fixed += "\""
-    try:
-        return json.loads(fixed)
-    except Exception:
-        pass
-
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group(0))
-            if "rationale_match" not in parsed:
-                parsed["rationale_match"] = False
-            return parsed
-        except Exception:
-            return {}
-    # Partial JSON salvage
-    if "\"pass\": true" in fixed:
-        return {"pass": True, "reason": "Partial judge output parsed", "rationale_match": False}
-    if "\"pass\": false" in fixed:
-        return {"pass": False, "reason": "Partial judge output parsed", "rationale_match": False}
-    return {}
-
-
-def judge_answer(llm, question: str, expected: str, rationale: str, answer: str) -> dict:
+    Returns:
+        A callable that takes a prompt string and returns the LLM response string
+    """
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
-    system_prompt = (
-        "You are an evaluator. Primary criterion: whether the model answer's final "
-        "output matches the Benchmark Output in meaning. If the final output is correct, "
-        "pass even if the reasoning/rationale differs. "
-        "Separately assess if the rationale matches the benchmark rationale. "
-        "Output ONLY valid JSON (no markdown, no extra text): "
-        "{{\"pass\": true/false, \"reason\": \"...\", \"rationale_match\": true/false}}. "
-        "Output JSON on a single line with no newlines and end with '}}'."
-    )
-    human_prompt = (
-        "Question:\n{question}\n\n"
-        "Benchmark Output:\n{expected}\n\n"
-        "Benchmark Rationale:\n{rationale}\n\n"
-        "Model Answer:\n{answer}\n"
-    )
+    def judge_fn(prompt: str) -> str:
+        chat_prompt = ChatPromptTemplate.from_messages(
+            [("human", "{prompt}")]
+        )
+        chain = chat_prompt | llm | StrOutputParser()
+        return chain.invoke({"prompt": prompt})
 
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", system_prompt), ("human", human_prompt)]
-    )
-    chain = prompt | llm | StrOutputParser()
-    raw = chain.invoke(
-        {
-            "question": question,
-            "expected": expected or "",
-            "rationale": rationale or "",
-            "answer": answer or "",
-        }
-    )
-    data = parse_json_output(raw)
-    if not data or "pass" not in data:
-        return {"pass": False, "reason": "Judge output parse error", "rationale_match": False, "raw": raw}
-    return {
-        "pass": bool(data.get("pass")),
-        "reason": str(data.get("reason", "")).strip(),
-        "rationale_match": bool(data.get("rationale_match", False)),
-        "raw": raw,
-    }
+    return judge_fn
 
 
 def build_judge_summary(comparisons: list) -> dict:
     summary: dict[str, dict[str, int]] = {}
     for comp in comparisons:
         for model_name, result in comp.get("models", {}).items():
-            summary.setdefault(model_name, {"pass": 0, "fail": 0, "total": 0, "rationale_match": 0, "rationale_mismatch": 0})
+            summary.setdefault(model_name, {
+                "pass": 0, "fail": 0, "total": 0,
+                "rationale_match": 0, "rationale_mismatch": 0,
+                "total_novelty_score": 0, "total_reasoning_similarity_score": 0,
+            })
             judge = result.get("judge")
             if not judge:
                 continue
@@ -215,6 +151,8 @@ def build_judge_summary(comparisons: list) -> dict:
                     summary[model_name]["rationale_match"] += 1
                 else:
                     summary[model_name]["rationale_mismatch"] += 1
+            summary[model_name]["total_novelty_score"] += judge.get("novelty_score", 0)
+            summary[model_name]["total_reasoning_similarity_score"] += judge.get("reasoning_similarity_score", 0)
     return summary
 
 
@@ -433,17 +371,21 @@ def render_results_by_model(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def score_answer(judge, question: str, expected: str, rationale: str, answer: str):
-    Logger.info("Scoring answer using judge model")
-    if not answer or answer.strip().lower() in {"n/a", "na"}:
-        return {"pass": False, "reason": "Empty or N/A answer"}
-
-    result = judge(question, expected, rationale, answer)
+def score_answer(evaluator: AnswerEvaluator, question: str, expected: str, rationale: str, answer: str):
+    Logger.info("Scoring answer using AnswerEvaluator")
+    result = evaluator.evaluate(
+        question=question,
+        model_answer=answer,
+        expected=expected,
+        rationale=rationale,
+    )
     return {
         "pass": result.get("pass", False),
         "reason": result.get("reason", "Unknown reason"),
         "rationale_match": result.get("rationale_match", False),
-        "raw": result.get("raw", "")
+        "novelty_score": result.get("novelty_score", 0),
+        "reasoning_similarity_score": result.get("reasoning_similarity_score", 0),
+        "raw": result.get("raw", ""),
     }
 
 
@@ -505,6 +447,8 @@ def main():
 
     comparisons = data.get("comparisons", [])
     llm = get_llm(judge_config.model, judge_config.temperature, judge_config.max_tokens)
+    judge_fn = _make_llm_judge_fn(llm)
+    evaluator = AnswerEvaluator(llm_judge_fn=judge_fn)
 
     for comp in comparisons:
         question = comp.get("question_text") or ""
@@ -512,18 +456,18 @@ def main():
         rationale = comp.get("benchmark_rationale") or ""
         for model_name, result in comp.get("models", {}).items():
             answer = result.get("natural_language_answer")
-            if is_empty_answer(answer):
-                result["judge"] = {
-                    "pass": False,
-                    "reason": "Empty or N/A answer",
-                    "model": judge_config.model,
-                }
-                continue
-            judge = judge_answer(llm, question, expected, rationale, answer)
+            judge = evaluator.evaluate(
+                question=question,
+                model_answer=answer or "",
+                expected=expected,
+                rationale=rationale,
+            )
             result["judge"] = {
                 "pass": judge.get("pass", False),
                 "reason": judge.get("reason", ""),
                 "rationale_match": judge.get("rationale_match", False),
+                "novelty_score": judge.get("novelty_score", 0),
+                "reasoning_similarity_score": judge.get("reasoning_similarity_score", 0),
                 "raw": judge.get("raw", ""),
                 "model": judge_config.model,
             }
