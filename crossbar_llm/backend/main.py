@@ -43,6 +43,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.responses import JSONResponse
 from fastapi_csrf_protect import CsrfProtect
 from pydantic import BaseModel
@@ -76,7 +77,32 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
+
+# Use unpkg.com instead of cdn.jsdelivr.net for Swagger UI / ReDoc assets.
+# cdn.jsdelivr.net is inaccessible in some network environments.
+_SWAGGER_JS_URL = "https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"
+_SWAGGER_CSS_URL = "https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"
+_REDOC_JS_URL = "https://unpkg.com/redoc@2/bundles/redoc.standalone.js"
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+        swagger_js_url=_SWAGGER_JS_URL,
+        swagger_css_url=_SWAGGER_CSS_URL,
+    )
+
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_html():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - ReDoc",
+        redoc_js_url=_REDOC_JS_URL,
+    )
 
 
 # Helper function to get real client IP address when behind a reverse proxy
