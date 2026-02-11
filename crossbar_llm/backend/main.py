@@ -56,10 +56,15 @@ origins = [
 
 
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(_app):
     setup_logging(verbose=False)
     asyncio.get_event_loop_policy().get_event_loop()
-    Logger.info("API server started")
+    Logger.info("API server started with rate limiting enabled")
+    Logger.info(
+        f"Rate limits: {get_setting('rate_limits', {}).get('minute', 'N/A')}/min, "
+        f"{get_setting('rate_limits', {}).get('hour', 'N/A')}/hr, "
+        f"{get_setting('rate_limits', {}).get('day', 'N/A')}/day"
+    )
     yield
 
 
