@@ -1,11 +1,13 @@
 """
 Evaluation Pipeline Module
 
-This module provides three independent components for evaluating LLM model outputs:
+This module provides three independent components for evaluating LLM model outputs,
+plus a ready-to-run pipeline that combines them:
 
 1. TestDatasetLoader - Load test datasets from various formats (JSONL, JSON, CSV)
 2. EvaluationRunner - Run model inference and evaluation on test questions
 3. AnswerEvaluator - Evaluate and score model answers using LLM-as-judge
+4. run_pipeline - Complete pipeline: load → infer → judge → save report
 
 Example usage:
     from crossbar_llm.backend.evaluation import TestDatasetLoader, EvaluationRunner, AnswerEvaluator
@@ -28,14 +30,27 @@ Example usage:
             rationale=result["rationale"]
         )
         print(f"Pass: {score['pass']}, Novelty: {score['novelty_score']}")
+
+    # Or use the complete pipeline in one call:
+    from crossbar_llm.backend.evaluation import run_pipeline
+    report = run_pipeline(
+        dataset_path="questions.json",
+        output_path="report.json",
+        model_inference_fn=my_model_fn,
+        llm_judge_fn=my_judge_fn,
+        model_name="gpt-4",
+        judge_model="gpt-4",
+    )
 """
 
 from .test_loader import TestDatasetLoader
 from .evaluation_runner import EvaluationRunner
 from .answer_evaluator import AnswerEvaluator
+from .run_pipeline import run_pipeline
 
 __all__ = [
     "TestDatasetLoader",
     "EvaluationRunner",
     "AnswerEvaluator",
+    "run_pipeline",
 ]
