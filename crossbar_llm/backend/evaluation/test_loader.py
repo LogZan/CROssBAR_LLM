@@ -128,9 +128,11 @@ class TestDatasetLoader:
             "question": question,
             "expected": expected,
             "rationale": rationale,
+            "multi_hop": bool(obj.get("multi_hop", False)),
             "metadata": {k: v for k, v in obj.items()
                         if k not in ["question", "instruction", "input", "output",
-                                    "expected", "rationale", "question_id", "id"]}
+                                    "expected", "rationale", "question_id", "id",
+                                    "multi_hop"]}
         }
 
     def get_questions(self) -> List[Dict[str, Any]]:

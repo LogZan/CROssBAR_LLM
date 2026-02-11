@@ -224,6 +224,7 @@ def run_pipeline(
             model_answer=result.get("model_answer", ""),
             expected=result.get("expected", ""),
             rationale=result.get("rationale", ""),
+            trace=result.get("trace"),
         )
         result["judge"] = evaluation
 

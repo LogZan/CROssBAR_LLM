@@ -518,6 +518,16 @@ class RunQueryRequest(BaseModel):
     provider: Optional[str] = None
 
 
+class MultiHopRequest(BaseModel):
+    question: str
+    llm_type: str
+    top_k: int = 5
+    api_key: str
+    verbose: bool = False
+    provider: Optional[str] = None
+    max_steps: int = 5
+
+
 @app.post("/generate_query/")
 async def generate_query(
     request: Request,
@@ -762,6 +772,103 @@ async def run_query(
     logs = log_stream.getvalue()
 
     response = JSONResponse({"response": response, "result": result, "logs": logs})
+
+    return response
+
+
+@app.post("/run_multi_hop/")
+async def run_multi_hop(
+    request: Request,
+    multi_hop_request: MultiHopRequest,
+    csrf_token: CsrfProtect = Depends(),
+    _: bool = Depends(validate_csrf_if_enabled),
+):
+    # Apply rate limiting
+    check_rate_limit(request)
+
+    setup_logging(multi_hop_request.verbose)
+
+    Logger.info(f"Running multi-hop reasoning for question: '{multi_hop_request.question}'")
+    Logger.debug(
+        f"Using LLM: {multi_hop_request.llm_type}, max_steps: {multi_hop_request.max_steps}"
+    )
+
+    # Handle "env" API key by using the API key from .env
+    api_key = multi_hop_request.api_key
+    if api_key == "env":
+        provider = (
+            (multi_hop_request.provider or "").strip().lower()
+            if multi_hop_request.provider
+            else None
+        )
+        if not provider:
+            provider = get_provider_for_model(multi_hop_request.llm_type)
+        if not provider:
+            raise HTTPException(
+                status_code=400,
+                detail="Provider is required when using 'env' api_key. Supply 'provider' or pass an explicit API key.",
+            )
+        env_var = get_provider_env_var(provider)
+        if not env_var:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown provider '{provider}'.",
+            )
+        api_key = os.getenv(env_var)
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"API key for provider '{provider}' is not configured in environment ({env_var}).",
+            )
+        Logger.info(f"Using {provider} API key from .env via {env_var}")
+
+    key = f"{multi_hop_request.llm_type}_{api_key}"
+
+    if key not in pipeline_instances:
+        Logger.info(f"Creating new pipeline instance for {multi_hop_request.llm_type}")
+        pipeline_instances[key] = RunPipeline(
+            model_name=multi_hop_request.llm_type,
+            verbose=multi_hop_request.verbose,
+        )
+
+    rp = pipeline_instances[key]
+    rp.top_k = multi_hop_request.top_k
+
+    log_stream = StringIO()
+    handler = logging.StreamHandler(log_stream)
+    handler.setLevel(logging.DEBUG if multi_hop_request.verbose else logging.INFO)
+    logger = logging.getLogger()
+    logger.addHandler(handler)
+
+    try:
+        Logger.info("Starting multi-hop reasoning")
+        hop_result = rp.run_multi_hop(
+            question=multi_hop_request.question,
+            max_steps=multi_hop_request.max_steps,
+            reset_llm_type=True,
+            model_name=multi_hop_request.llm_type,
+        )
+
+        Logger.info(
+            f"Multi-hop reasoning completed. Steps: {len(hop_result.get('trace', []))}"
+        )
+
+    except Exception as e:
+        Logger.error(f"Error in multi-hop reasoning: {str(e)}")
+        logs = log_stream.getvalue()
+        logger.removeHandler(handler)
+        raise HTTPException(status_code=500, detail={"error": str(e), "logs": logs})
+    finally:
+        logger.removeHandler(handler)
+
+    logs = log_stream.getvalue()
+
+    response = JSONResponse({
+        "answer": hop_result.get("answer", ""),
+        "evidence": hop_result.get("evidence", []),
+        "trace": hop_result.get("trace", []),
+        "logs": logs,
+    })
 
     return response
 
