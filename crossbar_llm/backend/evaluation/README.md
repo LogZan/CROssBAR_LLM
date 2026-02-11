@@ -859,7 +859,7 @@ for r in results:
 | "Judge output parse error"    | 确保 judge 模型返回有效 JSON，`max_tokens >= 256`               |
 | 所有新颖性评分都很低            | 可能是模型在重复 benchmark 答案，调整 temperature                 |
 | 多跳推理结果缺少 trace          | 确保推理函数返回 `evidence` 和 `trace` 字段                     |
-| `multi_hop` 字段未被识别       | 确保在数据集 JSON 中使用 `"multi_hop": true`（而非 `"multi-hop"`）|
+| `multi_hop` 字段未被识别       | 字段名必须使用下划线：`"multi_hop": true`（`multi-hop` 连字符无效）|
 | 多跳推理步数过多               | 减小 `max_steps` 或优化决策 prompt                               |
 
 ## License
