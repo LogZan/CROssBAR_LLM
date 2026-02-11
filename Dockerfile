@@ -39,7 +39,7 @@ WORKDIR ..
 RUN rm -rf frontend
 
 WORKDIR ..
-COPY startup.sh .
+COPY scripts/startup.sh .
 RUN chmod +x startup.sh
 
 EXPOSE 8000

@@ -3,12 +3,20 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
 from typing import Dict, List, Optional
+
+# Ensure the backend directory is on the Python path so that local modules
+# (config, models_config, tools, …) can be found regardless of the working
+# directory from which uvicorn is launched.
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 import neo4j
 import numpy as np

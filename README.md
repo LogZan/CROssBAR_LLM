@@ -75,21 +75,21 @@ The CROssBAR-LLM application consists of two main components:
 
 **Backend Setup:**
 
-1. Navigate to the backend directory:
-   ```bash
-   cd crossbar_llm/backend
-   ```
+Run the FastAPI server using one of the following approaches:
 
-2. Run the FastAPI server:
-   ```bash
-   # If using poetry
-   poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```bash
+# Option A: from the project root
+uvicorn crossbar_llm.backend.main:app --reload --host 0.0.0.0 --port 8000
 
-   # If using pip
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
+# Option B: from the backend directory
+cd crossbar_llm/backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-   The backend API will be available at `http://localhost:8000`
+# Either command also works with poetry:
+# poetry run uvicorn ...
+```
+
+The backend API will be available at `http://localhost:8000`
 
 **Frontend Setup:**
 
@@ -134,7 +134,7 @@ The CROssBAR-LLM application consists of two main components:
 If you have all dependencies installed locally, you can use the provided startup script:
 
 ```bash
-./startup.sh
+./scripts/startup.sh
 ```
 
 This will start both the backend (port 8000) and frontend (port 8501) services.
