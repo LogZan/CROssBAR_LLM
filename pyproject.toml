@@ -6,7 +6,7 @@ authors = ["Melih DARCAN <57872471+MelihDarcanxyz@users.noreply.github.com>", "B
 license = "License :: OSI Approved :: GNU General Public License v3 (GPLv3)"
 
 [tool.poetry.dependencies]
-python = ">=3.10, <3.11"
+python = ">=3.10, <3.13"
 
 langchain = "^0.3.0"
 langchain-anthropic = "^0.2.3"
