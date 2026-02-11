@@ -39,3 +39,6 @@ batch_output
 Benchmark
 
 cache
+
+# Evaluation results
+crossbar_llm/backend/evaluation_results/
