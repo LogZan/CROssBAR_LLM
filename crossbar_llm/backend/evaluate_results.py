@@ -18,7 +18,9 @@ import yaml
 
 from compare_results import ResultComparator, find_latest_run
 from models_config import ensure_models_registered, get_provider_for_model_name
-
+from tools.langchain_llm_qa_trial import RunPipeline
+from tools.utils import Logger
+from .evaluate_results import TestDatasetLoader, AnswerEvaluator, score_answer
 
 @dataclass
 class JudgeConfig:
@@ -431,6 +433,20 @@ def render_results_by_model(
                 lines.append(f"> Raw: {judge.get('raw')}")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def score_answer(judge, question: str, expected: str, rationale: str, answer: str):
+    Logger.info("Scoring answer using judge model")
+    if not answer or answer.strip().lower() in {"n/a", "na"}:
+        return {"pass": False, "reason": "Empty or N/A answer"}
+
+    result = judge(question, expected, rationale, answer)
+    return {
+        "pass": result.get("pass", False),
+        "reason": result.get("reason", "Unknown reason"),
+        "rationale_match": result.get("rationale_match", False),
+        "raw": result.get("raw", "")
+    }
 
 
 def main():
