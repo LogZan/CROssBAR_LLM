@@ -134,7 +134,7 @@ class AnswerEvaluator:
             "  \"novelty_score\": integer 0-10,\n"
             "  \"reasoning_similarity_score\": integer 0-10\n"
             "}\n"
-            "Output JSON on a single line with no newlines and end with '}}'."
+            "Output JSON on a single line with no newlines."
         )
 
         human_prompt = (

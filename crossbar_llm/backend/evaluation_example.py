@@ -24,15 +24,39 @@ sys.path.insert(0, str(backend_dir))
 from evaluation import TestDatasetLoader, EvaluationRunner, AnswerEvaluator
 
 
+# Sample dataset for demonstration
+SAMPLE_DATASET = [
+    {
+        "question_id": "q1",
+        "question": "What is 2+2?",
+        "output": "4",
+        "rationale": "Basic arithmetic: 2+2=4"
+    },
+    {
+        "question_id": "q2",
+        "instruction": "Calculate the sum",
+        "input": "3 + 5",
+        "output": "8",
+        "rationale": "3+5=8"
+    },
+    {
+        "question_id": "q3",
+        "question": "What is the capital of France?",
+        "output": "Paris",
+        "rationale": "Paris is the capital city of France"
+    }
+]
+
+
 def create_sample_dataset():
     """Create a sample JSONL dataset for testing."""
-    sample_data = """{"question_id": "q1", "question": "What is 2+2?", "output": "4", "rationale": "Basic arithmetic: 2+2=4"}
-{"question_id": "q2", "instruction": "Calculate the sum", "input": "3 + 5", "output": "8", "rationale": "3+5=8"}
-{"question_id": "q3", "question": "What is the capital of France?", "output": "Paris", "rationale": "Paris is the capital city of France"}
-"""
-    
     dataset_path = Path("sample_questions.jsonl")
-    dataset_path.write_text(sample_data, encoding="utf-8")
+    
+    with open(dataset_path, "w", encoding="utf-8") as f:
+        for item in SAMPLE_DATASET:
+            import json
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    
     print(f"✓ Created sample dataset: {dataset_path}")
     return dataset_path
 
