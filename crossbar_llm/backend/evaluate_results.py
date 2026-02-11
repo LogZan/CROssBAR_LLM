@@ -129,7 +129,7 @@ def _make_llm_judge_fn(llm):
 
 
 def build_judge_summary(comparisons: list) -> dict:
-    summary: dict[str, dict[str, int]] = {}
+    summary: dict[str, dict[str, Any]] = {}
     for comp in comparisons:
         for model_name, result in comp.get("models", {}).items():
             summary.setdefault(model_name, {
@@ -153,6 +153,11 @@ def build_judge_summary(comparisons: list) -> dict:
                     summary[model_name]["rationale_mismatch"] += 1
             summary[model_name]["total_novelty_score"] += judge.get("novelty_score", 0)
             summary[model_name]["total_reasoning_similarity_score"] += judge.get("reasoning_similarity_score", 0)
+    # Compute averages
+    for stats in summary.values():
+        total = stats["total"]
+        stats["avg_novelty_score"] = round(stats["total_novelty_score"] / total, 2) if total > 0 else 0
+        stats["avg_reasoning_similarity_score"] = round(stats["total_reasoning_similarity_score"] / total, 2) if total > 0 else 0
     return summary
 
 
