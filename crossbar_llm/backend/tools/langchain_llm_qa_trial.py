@@ -834,6 +834,7 @@ class MultiHopReasoner:
         evidence: list = []
         trace: list = []
         current_node: str = "Not yet determined (initial step)"
+        action: str = "C"
 
         for step in range(1, self.max_steps + 1):
             # --- 1. ask the LLM what to do ---
@@ -934,7 +935,7 @@ class MultiHopReasoner:
         return {
             "evidence": evidence,
             "trace": trace,
-            "final_action": action if 'action' in dir() else "C",
+            "final_action": action,
         }
 
     # ------------------------------------------------------------------
