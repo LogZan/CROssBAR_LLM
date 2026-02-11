@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
 from typing import Dict, List, Optional
@@ -53,7 +54,21 @@ origins = [
     f"https://crossbarv2.hubiodatalab.com{os.getenv('REACT_APP_CROSSBAR_LLM_ROOT_PATH')}",
 ]
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app):
+    setup_logging(verbose=False)
+    asyncio.get_event_loop_policy().get_event_loop()
+    Logger.info("API server started with rate limiting enabled")
+    Logger.info(
+        f"Rate limits: {get_setting('rate_limits', {}).get('minute', 'N/A')}/min, "
+        f"{get_setting('rate_limits', {}).get('hour', 'N/A')}/hr, "
+        f"{get_setting('rate_limits', {}).get('day', 'N/A')}/day"
+    )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # Helper function to get real client IP address when behind a reverse proxy
@@ -986,13 +1001,4 @@ def get_available_models():
     return models
 
 
-# Initialize logging on startup
-@app.on_event("startup")
-async def startup_event():
-    setup_logging(verbose=False)
-    # Initialize the event loop for threading usage
-    asyncio.get_event_loop_policy().get_event_loop()
-    Logger.info("API server started with rate limiting enabled")
-    Logger.info(
-        "Rate limits: 3 requests per minute, 10 requests per hour, 25 requests per day"
-    )
+
