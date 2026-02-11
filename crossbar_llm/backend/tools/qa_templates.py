@@ -330,7 +330,7 @@ ANSWER_SUFFICIENCY_PROMPT = PromptTemplate(
 )
 
 
-from .multi_hop_utils import MULTI_HOP_DECISION_TEMPLATE  # noqa: E402 – single source of truth
+from .multi_hop_utils import MULTI_HOP_DECISION_TEMPLATE  # noqa: E402 - single source of truth
 
 MULTI_HOP_DECISION_PROMPT = PromptTemplate(
     input_variables=["question", "current_node", "evidence", "step", "max_steps"],
