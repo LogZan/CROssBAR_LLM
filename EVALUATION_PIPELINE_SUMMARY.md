@@ -223,6 +223,16 @@ python evaluation_example.py
 ### 已修复 (Fixed)
 - `evaluate_results.py` - 修复了循环导入问题
 
+### 已重构 (Refactored)
+- `evaluate_results.py` - 现在使用 `evaluation.AnswerEvaluator` 替代内部重复的评判逻辑
+  - 移除了重复的 `parse_json_output()`、`is_empty_answer()`、`judge_answer()` 函数
+  - 通过 `_make_llm_judge_fn()` 将 LangChain LLM 适配为 `AnswerEvaluator` 的接口
+  - 评判结果现在包含 `novelty_score` 和 `reasoning_similarity_score` 字段
+  - `evaluate_results.py` refactored to use `evaluation.AnswerEvaluator` instead of duplicated judge logic
+  - Removed duplicated `parse_json_output()`, `is_empty_answer()`, `judge_answer()` functions
+  - Adapted LangChain LLM to `AnswerEvaluator` interface via `_make_llm_judge_fn()`
+  - Judge results now include `novelty_score` and `reasoning_similarity_score` fields
+
 ### 已添加 (Added)
 - `evaluation/` - 新的评测模块目录
 - `evaluation/README.md` - 详细文档
