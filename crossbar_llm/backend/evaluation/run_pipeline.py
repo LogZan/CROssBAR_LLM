@@ -38,17 +38,18 @@ from .evaluation_runner import EvaluationRunner
 from .answer_evaluator import AnswerEvaluator
 
 
-def _build_model_inference_fn(model_name: str):
+def _get_llm(model_name: str, temperature: float = 0, max_tokens: int = 0):
     """
-    Build a model inference function using the project's LangChain LLM setup.
+    Build a LangChain LLM instance from the project's model configuration.
 
     Args:
-        model_name: Name of the model to use for inference
+        model_name: Name of the model
+        temperature: Sampling temperature
+        max_tokens: Max output tokens (0 = use model default)
 
     Returns:
-        A callable that takes a question string and returns a dict with the answer
+        A LangChain LLM instance
     """
-    # Lazy imports to avoid import errors when dependencies are not installed
     backend_dir = Path(__file__).resolve().parent.parent
     if str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
@@ -64,8 +65,6 @@ def _build_model_inference_fn(model_name: str):
         NVIDIALanguageModel,
         OpenRouterLanguageModel,
     )
-    from langchain_core.output_parsers import StrOutputParser
-    from langchain_core.prompts import ChatPromptTemplate
 
     provider_model_map = {
         "OpenAI": OpenAILanguageModel,
@@ -77,9 +76,17 @@ def _build_model_inference_fn(model_name: str):
         "OpenRouter": OpenRouterLanguageModel,
     }
 
+    api_key_attrs = {
+        "OpenAI": "openai_api_key",
+        "Google": "gemini_api_key",
+        "Anthropic": "anthropic_api_key",
+        "Groq": "groq_api_key",
+        "Nvidia": "nvidia_api_key",
+        "OpenRouter": "openrouter_api_key",
+    }
+
     provider = get_provider_for_model_name(model_name)
     if not provider:
-        # Auto-register under OpenRouter as fallback
         ensure_models_registered("OpenRouter", [model_name])
         provider = "OpenRouter"
 
@@ -89,19 +96,34 @@ def _build_model_inference_fn(model_name: str):
     config = Config()
     model_class = provider_model_map[provider]
     if provider == "Ollama":
-        llm = model_class(model_name=model_name, temperature=0).llm
+        llm = model_class(model_name=model_name, temperature=temperature).llm
     else:
-        api_key_attr = {
-            "OpenAI": "openai_api_key",
-            "Google": "gemini_api_key",
-            "Anthropic": "anthropic_api_key",
-            "Groq": "groq_api_key",
-            "Nvidia": "nvidia_api_key",
-            "OpenRouter": "openrouter_api_key",
-        }[provider]
-        api_key = getattr(config, api_key_attr)
-        llm = model_class(api_key, model_name=model_name, temperature=0).llm
+        api_key = getattr(config, api_key_attrs[provider])
+        llm = model_class(api_key, model_name=model_name, temperature=temperature).llm
 
+    if max_tokens and hasattr(llm, "max_tokens"):
+        try:
+            llm.max_tokens = max_tokens
+        except Exception:
+            pass
+
+    return llm
+
+
+def _build_model_inference_fn(model_name: str):
+    """
+    Build a model inference function using the project's LangChain LLM setup.
+
+    Args:
+        model_name: Name of the model to use for inference
+
+    Returns:
+        A callable that takes a question string and returns a dict with the answer
+    """
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+
+    llm = _get_llm(model_name, temperature=0)
     prompt = ChatPromptTemplate.from_messages([("human", "{question}")])
     chain = prompt | llm | StrOutputParser()
 
@@ -122,64 +144,10 @@ def _build_judge_fn(judge_model: str):
     Returns:
         A callable that takes a prompt string and returns the LLM response string
     """
-    backend_dir = Path(__file__).resolve().parent.parent
-    if str(backend_dir) not in sys.path:
-        sys.path.insert(0, str(backend_dir))
-
-    from models_config import ensure_models_registered, get_provider_for_model_name
-    from tools.langchain_llm_qa_trial import (
-        Config,
-        OpenAILanguageModel,
-        GoogleGenerativeLanguageModel,
-        AnthropicLanguageModel,
-        GroqLanguageModel,
-        OllamaLanguageModel,
-        NVIDIALanguageModel,
-        OpenRouterLanguageModel,
-    )
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
-    provider_model_map = {
-        "OpenAI": OpenAILanguageModel,
-        "Google": GoogleGenerativeLanguageModel,
-        "Anthropic": AnthropicLanguageModel,
-        "Groq": GroqLanguageModel,
-        "Ollama": OllamaLanguageModel,
-        "Nvidia": NVIDIALanguageModel,
-        "OpenRouter": OpenRouterLanguageModel,
-    }
-
-    provider = get_provider_for_model_name(judge_model)
-    if not provider:
-        ensure_models_registered("OpenRouter", [judge_model])
-        provider = "OpenRouter"
-
-    if provider not in provider_model_map:
-        raise ValueError(f"Unsupported provider: {provider}")
-
-    config = Config()
-    model_class = provider_model_map[provider]
-    if provider == "Ollama":
-        llm = model_class(model_name=judge_model, temperature=0).llm
-    else:
-        api_key_attr = {
-            "OpenAI": "openai_api_key",
-            "Google": "gemini_api_key",
-            "Anthropic": "anthropic_api_key",
-            "Groq": "groq_api_key",
-            "Nvidia": "nvidia_api_key",
-            "OpenRouter": "openrouter_api_key",
-        }[provider]
-        api_key = getattr(config, api_key_attr)
-        llm = model_class(api_key, model_name=judge_model, temperature=0).llm
-
-    if hasattr(llm, "max_tokens"):
-        try:
-            llm.max_tokens = 256
-        except Exception:
-            pass
-
+    llm = _get_llm(judge_model, temperature=0, max_tokens=256)
     prompt = ChatPromptTemplate.from_messages([("human", "{prompt}")])
     chain = prompt | llm | StrOutputParser()
 
