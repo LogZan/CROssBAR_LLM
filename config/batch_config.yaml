@@ -62,6 +62,19 @@ multi_step:
   min_results: 1
 
 # =============================================================================
+# Multi-hop Reasoning Settings
+# =============================================================================
+# When enabled, the LLM decides at each step whether to:
+#   A. Continue exploring the current node
+#   B. Jump to a different node
+#   C. Stop and produce the final answer
+#   D. Run a global overview query
+# This overrides multi_step when enabled.
+multi_hop:
+  enabled: false
+  max_steps: 5
+
+# =============================================================================
 # Output Settings
 # =============================================================================
 output:
