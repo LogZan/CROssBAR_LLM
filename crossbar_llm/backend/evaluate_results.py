@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-Evaluate batch results using an LLM-as-judge.
+Evaluate batch results using an LLM-as-judge (Batch Pipeline Post-Processing).
 
 Reads results_summary.json produced by compare_results.py, adds judge results,
 and updates results_summary.json, results_by_question.md, results_by_model.md.
 
 Uses the evaluation.AnswerEvaluator module for LLM-as-judge logic to avoid
 code duplication.
+
+This file is part of the **batch testing pipeline** and is called by
+``scripts/run_batch_test.sh`` after ``compare_results.py`` has generated
+the initial comparison.  It also exposes helper functions (``judge_answer``,
+``is_empty_answer``, ``get_llm``) imported by ``batch_pipeline.py`` for
+inline judging during batch execution.
+
+See ``evaluation/README.md`` § "run_pipeline 与 batch_pipeline 的区别"
+for the full architecture diagram.
 """
 
 import argparse

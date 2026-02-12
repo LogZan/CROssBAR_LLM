@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """
-Result Comparison Tool
+Result Comparison Tool (Batch Pipeline Post-Processing)
 
 Compare results from multiple LLM models side-by-side.
 Generates comparison reports in JSON and Markdown formats.
+
+This file is part of the **batch testing pipeline** and is used
+after ``batch_pipeline.py`` has produced per-model result files.
+It is called by ``scripts/run_batch_test.sh`` and also imported
+by ``evaluate_results.py``.
+
+See ``evaluation/README.md`` § "run_pipeline 与 batch_pipeline 的区别"
+for the full architecture diagram.
 """
 
 import argparse

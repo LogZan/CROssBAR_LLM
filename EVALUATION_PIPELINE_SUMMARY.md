@@ -220,6 +220,33 @@ python evaluation_example.py
   - `evaluation_pipeline.py`
   - `test_dataset_loader.py`
 
+### 仍在使用 (Still Active)
+
+以下文件是**批量测试 pipeline** 的组成部分，**不应删除**：
+
+The following files are part of the **batch testing pipeline** and should **NOT be removed**:
+
+| 文件 (File)                | 职责 (Responsibility)                                |
+|---------------------------|------------------------------------------------------|
+| `batch_pipeline.py`       | 多模型并行批量测试（连接 KG、多步/多跳推理）            |
+| `compare_results.py`      | 对比多个模型结果，生成报告                              |
+| `evaluate_results.py`     | 对批量结果执行 LLM-as-judge 评判                       |
+| `evaluation_example.py`   | `evaluation/` 模块的使用示例                            |
+
+它们与 `evaluation/run_pipeline.py` 是**两套不同的系统**，适用于不同场景：
+- `evaluation/run_pipeline.py`：轻量级单模型评测，CLI 命令行驱动
+- `batch_pipeline.py` + `compare_results.py` + `evaluate_results.py`：生产级多模型批量测试
+
+两套系统通过共享 `evaluation/answer_evaluator.py` 的评判引擎避免代码重复。
+详见 `evaluation/README.md` 中的架构图。
+
+These are **two different systems** for different scenarios:
+- `evaluation/run_pipeline.py`: Lightweight single-model evaluation, CLI-driven
+- `batch_pipeline.py` + `compare_results.py` + `evaluate_results.py`: Production multi-model batch testing
+
+Both systems share the `evaluation/answer_evaluator.py` judging engine to avoid code duplication.
+See the architecture diagram in `evaluation/README.md` for details.
+
 ### 已修复 (Fixed)
 - `evaluate_results.py` - 修复了循环导入问题
 

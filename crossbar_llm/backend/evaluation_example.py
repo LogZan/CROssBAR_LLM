@@ -7,6 +7,10 @@ This example demonstrates how to use the three evaluation modules:
 2. EvaluationRunner - Run model inference
 3. AnswerEvaluator - Evaluate answers with LLM judge
 
+This uses the **lightweight evaluation pipeline** (``evaluation/``).
+For production multi-model batch testing, use ``batch_pipeline.py`` instead.
+See ``evaluation/README.md`` for the full architecture overview.
+
 Before running:
 1. Install dependencies: pip install -r requirements.txt
 2. Set up .env file with API keys

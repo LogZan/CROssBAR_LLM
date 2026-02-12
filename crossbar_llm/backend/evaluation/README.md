@@ -62,6 +62,66 @@ Pipeline 由四个组件构成：
 | **AnswerEvaluator**                  | `answer_evaluator.py`    | LLM-as-judge 评分（感知多跳 trace）                       |
 | **run_pipeline** (CLI)               | `run_pipeline.py`        | 串联以上三步，生成 JSON 报告；支持 `--dry-run`             |
 
+### `run_pipeline` 与 `batch_pipeline` 的区别
+
+项目中有两套评测系统，适用于不同场景：
+
+There are two evaluation systems in the project, designed for different scenarios:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                     评测系统全景 (Evaluation Systems Overview)                │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌──────────────────────────────────┐   │
+│  │   evaluation/run_pipeline.py    │  │      batch_pipeline.py           │   │
+│  │   (轻量级单模型评测)             │  │   (生产级多模型批量测试)          │   │
+│  │                                 │  │                                  │   │
+│  │ • 单模型评测                     │  │ • 多模型并行评测                  │   │
+│  │ • CLI 命令行驱动                 │  │ • YAML 配置驱动                  │   │
+│  │ • 支持 --dry-run                │  │ • 配置热重载                     │   │
+│  │ • 支持 --multi-hop              │  │ • 速率限制 + 重试逻辑            │   │
+│  │ • 支持 --config 读取配置         │  │ • 连接真实 KG (Neo4j)            │   │
+│  │ • 输出: 单个 JSON 报告           │  │ • 多步/多跳推理                  │   │
+│  │                                 │  │ • 集成 LLM-as-judge             │   │
+│  │  ┌───────────┐                  │  │ • 输出: 多文件报告               │   │
+│  │  │evaluation/│ (三个模块)        │  │                                  │   │
+│  │  └───────────┘                  │  │  ┌──────────────────┐            │   │
+│  └─────────────────────────────────┘  │  │compare_results.py│(后处理)     │   │
+│                                       │  │evaluate_results.py│(Judge)     │   │
+│                                       │  └──────────────────┘            │   │
+│                                       └──────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+| 特性 (Feature)                | `evaluation/run_pipeline.py`        | `batch_pipeline.py`                         |
+|-------------------------------|-------------------------------------|---------------------------------------------|
+| **定位 (Purpose)**            | 轻量级单模型评测                     | 生产级多模型批量测试                         |
+| **模型数量 (Models)**         | 单模型                               | 多模型并行                                   |
+| **KG 连接 (KG Connection)**   | 可选（通过自定义推理函数）            | 内置 Neo4j 连接                              |
+| **多跳推理 (Multi-hop)**      | 通过 `--multi-hop` 标记              | 通过 `batch_config.yaml` 配置                |
+| **配置方式 (Config)**         | CLI 参数 + 可选 `--config`           | `batch_config.yaml` + 热重载                 |
+| **输出格式 (Output)**         | 单个 JSON 报告                       | JSON + Markdown (按问题/按模型)              |
+| **调用方式 (Invocation)**     | `python -m evaluation.run_pipeline`  | `python batch_pipeline.py` 或 `scripts/run_batch_test.sh` |
+| **依赖文件 (Dependencies)**   | `evaluation/` 三个模块               | `compare_results.py` + `evaluate_results.py` |
+| **适合场景 (Best For)**       | 快速验证、开发调试、自定义推理函数     | 正式评测、多模型对比、生产环境批量测试        |
+
+#### 各文件职责 (File Responsibilities)
+
+| 文件 (File)                | 系统 (System)     | 职责 (Responsibility)                                          |
+|---------------------------|-------------------|----------------------------------------------------------------|
+| `evaluation/run_pipeline.py` | 轻量级 Pipeline | 一键式评测入口，串联加载→推理→评判→保存                          |
+| `evaluation/test_loader.py`  | 轻量级 Pipeline | 加载测试数据集（JSONL/JSON/CSV）                                 |
+| `evaluation/evaluation_runner.py` | 轻量级 Pipeline | 运行模型推理，收集结果                                       |
+| `evaluation/answer_evaluator.py` | 轻量级 Pipeline | LLM-as-judge 评分引擎（**也被 batch 系统复用**）             |
+| `batch_pipeline.py`         | 批量 Pipeline   | 多模型并行批量测试，连接 KG，多步/多跳推理                       |
+| `compare_results.py`        | 批量 Pipeline   | 对比多个模型的结果，生成对比报告（JSON + Markdown）              |
+| `evaluate_results.py`       | 批量 Pipeline   | 对批量结果执行 LLM-as-judge 评判，生成评分报告                   |
+| `evaluation_example.py`     | 示例            | 演示 `evaluation/` 三个模块的基本用法                            |
+
+> **注意**：`evaluate_results.py` 内部复用了 `evaluation/answer_evaluator.py` 的 `AnswerEvaluator` 类，避免了代码重复。两套系统共享相同的评判引擎。
+
+> **Note**: `evaluate_results.py` internally reuses the `AnswerEvaluator` class from `evaluation/answer_evaluator.py`, avoiding code duplication. Both systems share the same judging engine.
+
 ## 安装 (Installation)
 
 评测模块是 CROssBAR-LLM 的一部分，安装依赖：

@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
 """
-Batch LLM Testing Pipeline
+Batch LLM Testing Pipeline (Production)
 
 A standalone pipeline for batch testing multiple LLMs on benchmark questions.
 This module does not affect the existing frontend/backend logic.
+
+This is the **production batch testing system**, distinct from the lightweight
+``evaluation/run_pipeline.py``:
+
+- **batch_pipeline.py** (this file): Multi-model parallel execution with
+  real KG (Neo4j) connections, config hot reload, rate limiting, retry logic,
+  multi-step & multi-hop reasoning, and integrated LLM-as-judge.
+  Post-processing is handled by ``compare_results.py`` and
+  ``evaluate_results.py``.  Invoked via ``scripts/run_batch_test.sh`` or
+  directly with ``python batch_pipeline.py --config <path>``.
+
+- **evaluation/run_pipeline.py**: Lightweight single-model evaluation CLI.
+  Useful for quick validation, dry-runs, and custom inference functions.
+
+Both systems share ``evaluation/answer_evaluator.py`` for LLM-as-judge
+scoring to avoid code duplication.
 
 Features:
 - Config hot reload support
