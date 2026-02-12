@@ -50,7 +50,21 @@ try:
     import tiktoken
 except Exception:
     tiktoken = None
+from dotenv import load_dotenv
 
+# 确定项目根目录并加载 .env
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent  # 到达 CROssBAR_LLM 根目录
+env_file = project_root / ".env"
+
+if env_file.exists():
+    load_dotenv(env_file)
+    print(f"Loaded environment from: {env_file}")
+else:
+    load_dotenv()  # 尝试从当前目录或父目录查找
+    print("Warning: .env file not found in project root, using default search")
+    
+    
 # Shanghai timezone (UTC+8)
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 

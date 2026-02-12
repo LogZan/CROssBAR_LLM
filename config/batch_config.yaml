@@ -29,7 +29,7 @@ questions:
   # Option 2: Load from Benchmark file
   benchmark:
     enabled: true
-    file: "/mnt/shared-storage-gpfs2/ai4scifm-gpfs02/zengchuanlong/workspace/BioBenchmark/in-house/drug_target_disease_v1/test.jsonl"
+    file: "/mnt/vepfs/users/xrli/pipeline/BioBenchmark/in-house/drug_target_disease_v1/drugtgt02.jsonl"
     # Select questions by index (1-based) or question_id
     # Leave both empty to test ALL questions
     indices: []  # Test with first question only
