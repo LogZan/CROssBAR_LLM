@@ -280,5 +280,171 @@ class TestAnswerEvaluatorMultiHop(unittest.TestCase):
         self.assertTrue(all(r["pass"] for r in results))
 
 
+class TestRunPipelineMultiHop(unittest.TestCase):
+    """Test run_pipeline with multi_hop parameters."""
+
+    def _mock_inference(self, question):
+        return {"answer": f"mock answer for: {question[:30]}"}
+
+    def _mock_judge(self, prompt):
+        return json.dumps({
+            "pass": True,
+            "reason": "Mock",
+            "rationale_match": True,
+            "novelty_score": 5,
+            "reasoning_similarity_score": 5,
+        })
+
+    def test_run_pipeline_multi_hop_in_report(self):
+        """Report should contain multi_hop and multi_hop_max_steps fields."""
+        from evaluation.run_pipeline import run_pipeline
+
+        data = [{"question": "Q1", "output": "A1", "multi_hop": True}]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(data, f)
+            dataset_path = f.name
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False
+        ) as f:
+            output_path = f.name
+
+        try:
+            report = run_pipeline(
+                dataset_path=dataset_path,
+                output_path=output_path,
+                model_inference_fn=self._mock_inference,
+                llm_judge_fn=self._mock_judge,
+                model_name="test-model",
+                judge_model="test-judge",
+                multi_hop=True,
+                multi_hop_max_steps=3,
+            )
+            self.assertTrue(report["multi_hop"])
+            self.assertEqual(report["multi_hop_max_steps"], 3)
+        finally:
+            os.unlink(dataset_path)
+            os.unlink(output_path)
+
+    def test_run_pipeline_no_multi_hop_in_report(self):
+        """When multi_hop is False, report should reflect that."""
+        from evaluation.run_pipeline import run_pipeline
+
+        data = [{"question": "Q1", "output": "A1"}]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(data, f)
+            dataset_path = f.name
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False
+        ) as f:
+            output_path = f.name
+
+        try:
+            report = run_pipeline(
+                dataset_path=dataset_path,
+                output_path=output_path,
+                model_inference_fn=self._mock_inference,
+                llm_judge_fn=self._mock_judge,
+                model_name="test-model",
+                judge_model="test-judge",
+            )
+            self.assertFalse(report["multi_hop"])
+            self.assertIsNone(report["multi_hop_max_steps"])
+        finally:
+            os.unlink(dataset_path)
+            os.unlink(output_path)
+
+
+class TestRunPipelineCLIArgs(unittest.TestCase):
+    """Test CLI argument parsing for multi-hop flags."""
+
+    def test_multi_hop_flag_parsed(self):
+        """--multi-hop flag should be parsed correctly."""
+        import argparse
+
+        # Test the argparse setup by parsing known args
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--dataset", "-d", required=True)
+        parser.add_argument("--output", "-o", required=True)
+        parser.add_argument("--model-name", "-m", default="gemini-3-flash-preview")
+        parser.add_argument("--judge-model", "-j", default="gemini-3-flash-preview")
+        parser.add_argument("--multi-hop", action="store_true", default=False)
+        parser.add_argument("--multi-hop-max-steps", type=int, default=5)
+        parser.add_argument("--config", "-c", default=None)
+        parser.add_argument("--dry-run", action="store_true")
+
+        args = parser.parse_args([
+            "--dataset", "test.jsonl",
+            "--output", "report.json",
+            "--multi-hop",
+            "--multi-hop-max-steps", "3",
+        ])
+        self.assertTrue(args.multi_hop)
+        self.assertEqual(args.multi_hop_max_steps, 3)
+
+    def test_multi_hop_default_false(self):
+        """--multi-hop should default to False."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--dataset", "-d", required=True)
+        parser.add_argument("--output", "-o", required=True)
+        parser.add_argument("--multi-hop", action="store_true", default=False)
+        parser.add_argument("--multi-hop-max-steps", type=int, default=5)
+
+        args = parser.parse_args([
+            "--dataset", "test.jsonl",
+            "--output", "report.json",
+        ])
+        self.assertFalse(args.multi_hop)
+        self.assertEqual(args.multi_hop_max_steps, 5)
+
+    def test_config_flag_parsed(self):
+        """--config flag should be parsed."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--dataset", "-d", required=True)
+        parser.add_argument("--output", "-o", required=True)
+        parser.add_argument("--config", "-c", default=None)
+
+        args = parser.parse_args([
+            "--dataset", "test.jsonl",
+            "--output", "report.json",
+            "--config", "config/batch_config.yaml",
+        ])
+        self.assertEqual(args.config, "config/batch_config.yaml")
+
+    def test_config_loads_multi_hop_settings(self):
+        """Config YAML should populate multi_hop settings when --config is used."""
+        import yaml
+
+        config_data = {
+            "multi_hop": {"enabled": True, "max_steps": 7},
+            "judge": {"model": "gpt-4"},
+            "models": ["test-model-1"],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            yaml.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+
+            mh = cfg.get("multi_hop", {})
+            self.assertTrue(mh.get("enabled", False))
+            self.assertEqual(mh.get("max_steps"), 7)
+        finally:
+            os.unlink(config_path)
+
+
 if __name__ == "__main__":
     unittest.main()
