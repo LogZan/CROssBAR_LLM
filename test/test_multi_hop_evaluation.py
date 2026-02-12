@@ -365,7 +365,6 @@ class TestRunPipelineCLIArgs(unittest.TestCase):
 
     def test_multi_hop_flag_parsed(self):
         """--multi-hop flag should be parsed correctly."""
-        from evaluation.run_pipeline import main
         import argparse
 
         # Test the argparse setup by parsing known args

@@ -330,12 +330,12 @@ def main():
     )
     parser.add_argument(
         "--model-name", "-m",
-        default="gemini-3-flash-preview",
+        default=None,
         help="Name of the model for inference (default: gemini-3-flash-preview)",
     )
     parser.add_argument(
         "--judge-model", "-j",
-        default="gemini-3-flash-preview",
+        default=None,
         help="Name of the model for LLM judge (default: gemini-3-flash-preview)",
     )
     parser.add_argument(
@@ -347,7 +347,7 @@ def main():
     parser.add_argument(
         "--multi-hop-max-steps",
         type=int,
-        default=5,
+        default=None,
         help="Maximum number of multi-hop reasoning steps (default: 5)",
     )
     parser.add_argument(
@@ -363,7 +363,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve multi-hop and judge settings from config file if provided
+    # Resolve multi-hop and judge settings from config file if provided;
+    # CLI arguments take priority over config file values.
     multi_hop = args.multi_hop
     multi_hop_max_steps = args.multi_hop_max_steps
     model_name = args.model_name
@@ -379,20 +380,28 @@ def main():
             mh = cfg.get("multi_hop", {})
             if mh.get("enabled", False) and not args.multi_hop:
                 multi_hop = True
-            if "max_steps" in mh and args.multi_hop_max_steps == 5:
+            if "max_steps" in mh and multi_hop_max_steps is None:
                 multi_hop_max_steps = mh["max_steps"]
 
             judge_cfg = cfg.get("judge", {})
-            if judge_cfg.get("model") and args.judge_model == "gemini-3-flash-preview":
+            if judge_cfg.get("model") and judge_model is None:
                 judge_model = judge_cfg["model"]
 
             models = cfg.get("models", [])
-            if models and args.model_name == "gemini-3-flash-preview":
+            if models and model_name is None:
                 model_name = models[0]
 
             print(f"[CONFIG] Loaded settings from: {args.config}")
         except Exception as e:
             print(f"[WARNING] Failed to load config file: {e}")
+
+    # Apply defaults for values not set by CLI or config
+    if model_name is None:
+        model_name = "gemini-3-flash-preview"
+    if judge_model is None:
+        judge_model = "gemini-3-flash-preview"
+    if multi_hop_max_steps is None:
+        multi_hop_max_steps = 5
 
     model_inference_fn = None
     llm_judge_fn = None
