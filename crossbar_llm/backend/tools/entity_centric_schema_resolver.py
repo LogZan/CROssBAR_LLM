@@ -362,13 +362,33 @@ class EntityCentricSchemaResolver:
         """
         try:
             logging.info(f"Property match: identifier='{identifier}' type={entity_type}")
-            query = f"""
-            MATCH (n:{entity_type})
-            WHERE n.id = $identifier OR n.name CONTAINS $identifier OR n.primary_protein_name CONTAINS $identifier
-            RETURN n.id AS node_id
-            LIMIT 1
-            """
-            result = self.neo4j_helper.execute(query, top_k=1)
+            if entity_type == "Protein":
+                query = f"""
+                MATCH (n:{entity_type})
+                WHERE n.primaryAccession = $identifier
+                   OR n.uniProtkbId = $identifier
+                   OR n.id CONTAINS $identifier
+                RETURN n.id AS node_id
+                LIMIT 1
+                """
+            elif entity_type == "Gene":
+                query = f"""
+                MATCH (n:{entity_type})
+                WHERE n.geneName = $identifier
+                   OR n.id CONTAINS $identifier
+                   OR ANY(s IN coalesce(n.synonyms, []) WHERE s = $identifier)
+                RETURN n.id AS node_id
+                LIMIT 1
+                """
+            else:
+                query = f"""
+                MATCH (n:{entity_type})
+                WHERE n.name = $identifier
+                   OR n.id CONTAINS $identifier
+                RETURN n.id AS node_id
+                LIMIT 1
+                """
+            result = self.neo4j_helper.execute(query, top_k=1, parameters={"identifier": identifier})
 
             if result and result != "Given cypher query did not return any result":
                 node_id = result[0].get("node_id")
@@ -395,7 +415,7 @@ class EntityCentricSchemaResolver:
         try:
             # Escape single quotes in node_id
             escaped_node_id = node_id.replace("'", "\\'")
-            non_empty_check = "v IS NOT NULL AND toString(v) <> '' AND toString(v) <> '[]' AND toString(v) <> '{}' "
+            non_empty_check = "v IS NOT NULL AND NOT (v IS :: LIST<ANY>) AND toString(v) <> '' AND toString(v) <> '[]' AND toString(v) <> '{}' "
             node_query = f"""
             MATCH (n:{node_type} {{id: '{escaped_node_id}'}})
             WITH n, keys(n) AS props

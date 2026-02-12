@@ -119,7 +119,7 @@ class Neo4jGraphHelper:
             os.remove(file_path)
 
     @validate_call
-    def execute(self, query: str, top_k: int = 5):
+    def execute(self, query: str, top_k: int = 5, parameters: dict = None):
 
         if "LIMIT" in query:
             regex_pattern = r"\bLIMIT\s+\d+\b"
@@ -129,7 +129,7 @@ class Neo4jGraphHelper:
 
         with neo4j.GraphDatabase.driver(self.URI, auth=self.AUTH) as driver:
             records, _, _ = driver.execute_query(
-                query, database_=self.db_name, routing_="r"
+                query, parameters_=parameters or {}, database_=self.db_name, routing_="r"
             )
             if not records:
                 return "Given cypher query did not return any result"
