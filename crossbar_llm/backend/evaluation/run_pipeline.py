@@ -164,6 +164,8 @@ def run_pipeline(
     llm_judge_fn=None,
     model_name: str = "unknown",
     judge_model: str = "unknown",
+    multi_hop: bool = False,
+    multi_hop_max_steps: int = 5,
 ) -> Dict[str, Any]:
     """
     Run the full evaluation pipeline: load data, run inference, evaluate, save report.
@@ -178,12 +180,16 @@ def run_pipeline(
                       If None, a default judge will be built from *judge_model*.
         model_name: Name of the model being evaluated (used in report metadata)
         judge_model: Name of the judge model (used in report metadata)
+        multi_hop: Whether to enable multi-hop reasoning for KG queries
+        multi_hop_max_steps: Maximum number of reasoning steps when multi_hop is enabled
 
     Returns:
         The full evaluation report as a dict
     """
     # ---- Step 1: Load test dataset ----
     print(f"[Step 1] Loading test dataset from: {dataset_path}")
+    if multi_hop:
+        print(f"  Multi-hop reasoning: ENABLED (max_steps={multi_hop_max_steps})")
     loader = TestDatasetLoader(dataset_path)
     questions = loader.get_questions()
     print(f"  Loaded {len(questions)} questions")
@@ -255,6 +261,8 @@ def run_pipeline(
         "model_name": model_name,
         "judge_model": judge_model,
         "dataset_path": str(dataset_path),
+        "multi_hop": multi_hop,
+        "multi_hop_max_steps": multi_hop_max_steps if multi_hop else None,
         "run_summary": run_summary,
         "judge_summary": judge_summary,
         "results": results,
@@ -289,6 +297,20 @@ def main():
             "      --model-name gemini-3-flash-preview \\\n"
             "      --judge-model gemini-3-flash-preview\n"
             "\n"
+            "  # Enable multi-hop reasoning for KG evaluation:\n"
+            "  python -m evaluation.run_pipeline \\\n"
+            "      --dataset /path/to/test.jsonl \\\n"
+            "      --output report.json \\\n"
+            "      --model-name deepseek-v3-2-251201 \\\n"
+            "      --judge-model gpt-oss-120b \\\n"
+            "      --multi-hop --multi-hop-max-steps 5\n"
+            "\n"
+            "  # Use settings from batch_config.yaml:\n"
+            "  python -m evaluation.run_pipeline \\\n"
+            "      --dataset /path/to/test.jsonl \\\n"
+            "      --output report.json \\\n"
+            "      --config ../../config/batch_config.yaml\n"
+            "\n"
             "  # Dry-run with mock functions (no API keys needed):\n"
             "  python -m evaluation.run_pipeline \\\n"
             "      --dataset ../../questions.json \\\n"
@@ -317,12 +339,60 @@ def main():
         help="Name of the model for LLM judge (default: gemini-3-flash-preview)",
     )
     parser.add_argument(
+        "--multi-hop",
+        action="store_true",
+        default=False,
+        help="Enable multi-hop reasoning for KG queries",
+    )
+    parser.add_argument(
+        "--multi-hop-max-steps",
+        type=int,
+        default=5,
+        help="Maximum number of multi-hop reasoning steps (default: 5)",
+    )
+    parser.add_argument(
+        "--config", "-c",
+        default=None,
+        help="Path to batch_config.yaml to load multi_hop and judge settings from",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run with mock inference/judge functions (no API keys needed)",
     )
 
     args = parser.parse_args()
+
+    # Resolve multi-hop and judge settings from config file if provided
+    multi_hop = args.multi_hop
+    multi_hop_max_steps = args.multi_hop_max_steps
+    model_name = args.model_name
+    judge_model = args.judge_model
+
+    if args.config:
+        try:
+            import yaml
+
+            with open(args.config, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+
+            mh = cfg.get("multi_hop", {})
+            if mh.get("enabled", False) and not args.multi_hop:
+                multi_hop = True
+            if "max_steps" in mh and args.multi_hop_max_steps == 5:
+                multi_hop_max_steps = mh["max_steps"]
+
+            judge_cfg = cfg.get("judge", {})
+            if judge_cfg.get("model") and args.judge_model == "gemini-3-flash-preview":
+                judge_model = judge_cfg["model"]
+
+            models = cfg.get("models", [])
+            if models and args.model_name == "gemini-3-flash-preview":
+                model_name = models[0]
+
+            print(f"[CONFIG] Loaded settings from: {args.config}")
+        except Exception as e:
+            print(f"[WARNING] Failed to load config file: {e}")
 
     model_inference_fn = None
     llm_judge_fn = None
@@ -350,8 +420,10 @@ def main():
         output_path=args.output,
         model_inference_fn=model_inference_fn,
         llm_judge_fn=llm_judge_fn,
-        model_name=args.model_name,
-        judge_model=args.judge_model,
+        model_name=model_name,
+        judge_model=judge_model,
+        multi_hop=multi_hop,
+        multi_hop_max_steps=multi_hop_max_steps,
     )
 
 
