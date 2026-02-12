@@ -209,7 +209,7 @@ python evaluation_example.py
 
 - **详细文档**: `crossbar_llm/backend/evaluation/README.md`
 - **迁移指南**: `MIGRATION.md`
-- **工作示例**: `crossbar_llm/backend/evaluation_example.py`
+- **工作示例**: `python -m evaluation.run_pipeline --dry-run`
 
 ## 代码清理 (Code Cleanup)
 
@@ -219,6 +219,30 @@ python evaluation_example.py
   - `answer_scorer.py`
   - `evaluation_pipeline.py`
   - `test_dataset_loader.py`
+
+### 统一评测包 (Unified Evaluation Package)
+
+`compare_results.py` 和 `evaluate_results.py` 的实现已合并到 `evaluation/` 包中。
+原位置保留了薄包装器 (thin wrapper) 以确保向后兼容。
+
+The implementations of `compare_results.py` and `evaluate_results.py` have been
+consolidated into the `evaluation/` package.  Thin backward-compatible wrappers
+remain at the old top-level locations.
+
+| 文件 (File)                          | 职责 (Responsibility)                                |
+|-------------------------------------|------------------------------------------------------|
+| `batch_pipeline.py`                 | 多模型并行批量测试（连接 KG、多步/多跳推理）            |
+| `evaluation/compare_results.py`     | 对比多个模型结果，生成报告（canonical location）        |
+| `evaluation/evaluate_results.py`    | 对批量结果执行 LLM-as-judge 评判（canonical location）  |
+| `compare_results.py`                | 向后兼容包装器 → `evaluation/compare_results.py`       |
+| `evaluate_results.py`               | 向后兼容包装器 → `evaluation/evaluate_results.py`      |
+| `evaluation_example.py`             | 向后兼容包装器 → `evaluation/run_pipeline.py --dry-run` |
+
+两套系统现已统一在 `evaluation/` 包下，共享评判引擎。
+详见 `evaluation/README.md` 中的架构图。
+
+Both systems are now unified under the `evaluation/` package, sharing the
+judging engine.  See the architecture diagram in `evaluation/README.md`.
 
 ### 已修复 (Fixed)
 - `evaluate_results.py` - 修复了循环导入问题

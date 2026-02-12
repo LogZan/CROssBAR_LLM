@@ -61,6 +61,74 @@ Pipeline 由四个组件构成：
 | **EvaluationRunner**                 | `evaluation_runner.py`   | 运行模型推理，收集结果（含 evidence / trace / hop_count）  |
 | **AnswerEvaluator**                  | `answer_evaluator.py`    | LLM-as-judge 评分（感知多跳 trace）                       |
 | **run_pipeline** (CLI)               | `run_pipeline.py`        | 串联以上三步，生成 JSON 报告；支持 `--dry-run`             |
+| **ResultComparator**                 | `compare_results.py`     | 对比多个模型结果，生成对比报告（JSON + Markdown）          |
+| **evaluate_results** (Judge)         | `evaluate_results.py`    | LLM-as-judge 后处理 + `judge_answer` / `is_empty_answer`  |
+
+### `run_pipeline` 与 `batch_pipeline` 的区别
+
+项目中有两套评测系统，现已统一在 `evaluation/` 包下：
+
+Both evaluation systems are now unified under the `evaluation/` package:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│              统一评测包 (Unified evaluation/ Package)                         │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌──────────────────────────────────┐   │
+│  │   evaluation/run_pipeline.py    │  │      batch_pipeline.py           │   │
+│  │   (轻量级单模型评测)             │  │   (生产级多模型批量测试)          │   │
+│  │                                 │  │                                  │   │
+│  │ • 单模型评测                     │  │ • 多模型并行评测                  │   │
+│  │ • CLI 命令行驱动                 │  │ • YAML 配置驱动                  │   │
+│  │ • 支持 --dry-run                │  │ • 配置热重载                     │   │
+│  │ • 支持 --multi-hop              │  │ • 速率限制 + 重试逻辑            │   │
+│  │ • 支持 --config 读取配置         │  │ • 连接真实 KG (Neo4j)            │   │
+│  │ • 输出: 单个 JSON 报告           │  │ • 多步/多跳推理                  │   │
+│  │                                 │  │ • 集成 LLM-as-judge             │   │
+│  │                                 │  │ • 输出: 多文件报告               │   │
+│  └─────────────┬───────────────────┘  └──────────┬───────────────────────┘   │
+│                │                                  │                          │
+│                ▼                                  ▼                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │  evaluation/  (shared modules)                                         │  │
+│  │  ├── answer_evaluator.py   (LLM-as-judge engine)                       │  │
+│  │  ├── compare_results.py    (ResultComparator, find_latest_run)         │  │
+│  │  └── evaluate_results.py   (judge_answer, is_empty_answer, get_llm)   │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  Backward-compatible wrappers at old locations:                              │
+│  backend/compare_results.py  → evaluation/compare_results.py                │
+│  backend/evaluate_results.py → evaluation/evaluate_results.py               │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+| 特性 (Feature)                | `evaluation/run_pipeline.py`        | `batch_pipeline.py`                         |
+|-------------------------------|-------------------------------------|---------------------------------------------|
+| **定位 (Purpose)**            | 轻量级单模型评测                     | 生产级多模型批量测试                         |
+| **模型数量 (Models)**         | 单模型                               | 多模型并行                                   |
+| **KG 连接 (KG Connection)**   | 可选（通过自定义推理函数）            | 内置 Neo4j 连接                              |
+| **多跳推理 (Multi-hop)**      | 通过 `--multi-hop` 标记              | 通过 `batch_config.yaml` 配置                |
+| **配置方式 (Config)**         | CLI 参数 + 可选 `--config`           | `batch_config.yaml` + 热重载                 |
+| **输出格式 (Output)**         | 单个 JSON 报告                       | JSON + Markdown (按问题/按模型)              |
+| **调用方式 (Invocation)**     | `python -m evaluation.run_pipeline`  | `python batch_pipeline.py` 或 `scripts/run_batch_test.sh` |
+| **依赖文件 (Dependencies)**   | `evaluation/` 模块                   | `evaluation/compare_results.py` + `evaluation/evaluate_results.py` |
+| **适合场景 (Best For)**       | 快速验证、开发调试、自定义推理函数     | 正式评测、多模型对比、生产环境批量测试        |
+
+#### 各文件职责 (File Responsibilities)
+
+| 文件 (File)                        | 系统 (System)     | 职责 (Responsibility)                                          |
+|------------------------------------|-------------------|----------------------------------------------------------------|
+| `evaluation/run_pipeline.py`       | 轻量级 Pipeline   | 一键式评测入口，串联加载→推理→评判→保存                          |
+| `evaluation/test_loader.py`        | 轻量级 Pipeline   | 加载测试数据集（JSONL/JSON/CSV）                                 |
+| `evaluation/evaluation_runner.py`  | 轻量级 Pipeline   | 运行模型推理，收集结果                                           |
+| `evaluation/answer_evaluator.py`   | 共享引擎          | LLM-as-judge 评分引擎（**被两套系统复用**）                      |
+| `evaluation/compare_results.py`    | 批量 Pipeline     | 对比多个模型的结果，生成对比报告（JSON + Markdown）              |
+| `evaluation/evaluate_results.py`   | 批量 Pipeline     | 对批量结果执行 LLM-as-judge 评判 + 辅助函数                     |
+| `batch_pipeline.py`                | 批量 Pipeline     | 多模型并行批量测试，连接 KG，多步/多跳推理                       |
+
+> **注意**：`evaluate_results.py` 内部复用了 `evaluation/answer_evaluator.py` 的 `AnswerEvaluator` 类，避免了代码重复。两套系统共享相同的评判引擎。
+
+> **Note**: `evaluate_results.py` internally reuses the `AnswerEvaluator` class from `evaluation/answer_evaluator.py`, avoiding code duplication. Both systems share the same judging engine.
 
 ## 安装 (Installation)
 
@@ -127,6 +195,20 @@ python -m evaluation.run_pipeline \
     --model-name gemini-3-flash-preview \
     --judge-model gemini-3-flash-preview
 
+# 启用多跳推理
+python -m evaluation.run_pipeline \
+    --dataset /path/to/test.jsonl \
+    --output report.json \
+    --model-name deepseek-v3-2-251201 \
+    --judge-model gpt-oss-120b \
+    --multi-hop --multi-hop-max-steps 5
+
+# 从 batch_config.yaml 加载设置
+python -m evaluation.run_pipeline \
+    --dataset /path/to/test.jsonl \
+    --output report.json \
+    --config ../../config/batch_config.yaml
+
 # 使用 mock 函数进行试运行（不需要 API key）
 python -m evaluation.run_pipeline \
     --dataset ../../questions.json \
@@ -146,8 +228,10 @@ report = run_pipeline(
     llm_judge_fn=my_judge_fn,         # 可选，None 时自动构建
     model_name="gemini-3-flash-preview",
     judge_model="gemini-3-flash-preview",
+    multi_hop=True,                   # 可选，启用多跳推理
+    multi_hop_max_steps=5,            # 可选，最大推理步数
 )
-# report 包含: run_summary, judge_summary, results
+# report 包含: run_summary, judge_summary, results, multi_hop, multi_hop_max_steps
 ```
 
 ---
@@ -363,7 +447,51 @@ for r in report["results"]:
         print(f"  Judge pass: {r['judge']['pass']}")
 ```
 
-#### 方式 3：命令行 dry-run 快速验证
+#### 方式 3：命令行 `--multi-hop` 参数
+
+`run_pipeline` 命令行工具支持 `--multi-hop` 参数，可直接在 CLI 中启用多跳推理：
+
+```bash
+cd crossbar_llm/backend
+
+# 使用 --multi-hop 启用多跳推理
+python -m evaluation.run_pipeline \
+    --dataset /path/to/test.jsonl \
+    --output multi_hop_report.json \
+    --model-name deepseek-v3-2-251201 \
+    --judge-model gpt-oss-120b \
+    --multi-hop \
+    --multi-hop-max-steps 5
+```
+
+**CLI 参数说明：**
+
+| 参数                      | 类型   | 默认值                    | 说明                                   |
+|--------------------------|--------|--------------------------|----------------------------------------|
+| `--dataset`, `-d`        | string | (必填)                    | 测试数据集路径（JSONL/JSON/CSV）         |
+| `--output`, `-o`         | string | (必填)                    | 评测报告输出路径（JSON）                 |
+| `--model-name`, `-m`     | string | `gemini-3-flash-preview` | 推理模型名称                             |
+| `--judge-model`, `-j`    | string | `gemini-3-flash-preview` | Judge 模型名称                           |
+| `--multi-hop`            | flag   | `false`                  | 启用多跳推理                             |
+| `--multi-hop-max-steps`  | int    | `5`                      | 最大推理步数                             |
+| `--config`, `-c`         | string | (无)                     | 从 `batch_config.yaml` 加载设置          |
+| `--dry-run`              | flag   | `false`                  | 使用 mock 函数运行（无需 API key）        |
+
+#### 方式 4：通过 `--config` 加载 `batch_config.yaml`
+
+也可以通过 `--config` 参数直接从 `batch_config.yaml` 读取多跳推理和模型设置：
+
+```bash
+cd crossbar_llm/backend
+python -m evaluation.run_pipeline \
+    --dataset /path/to/test.jsonl \
+    --output multi_hop_report.json \
+    --config ../../config/batch_config.yaml
+```
+
+> **提示**：CLI 参数（`--multi-hop`、`--model-name` 等）优先于配置文件中的设置。
+
+#### 方式 5：命令行 dry-run 快速验证
 
 ```bash
 cd crossbar_llm/backend
