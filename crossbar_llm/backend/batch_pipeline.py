@@ -11,15 +11,17 @@ This is the **production batch testing system**, distinct from the lightweight
 - **batch_pipeline.py** (this file): Multi-model parallel execution with
   real KG (Neo4j) connections, config hot reload, rate limiting, retry logic,
   multi-step & multi-hop reasoning, and integrated LLM-as-judge.
-  Post-processing is handled by ``compare_results.py`` and
-  ``evaluate_results.py``.  Invoked via ``scripts/run_batch_test.sh`` or
-  directly with ``python batch_pipeline.py --config <path>``.
+  Post-processing modules (``compare_results`` and ``evaluate_results``)
+  are now consolidated under the ``evaluation/`` package.  Thin
+  backward-compatible wrappers remain at the old top-level locations.
+  Invoked via ``scripts/run_batch_test.sh`` or directly with
+  ``python batch_pipeline.py --config <path>``.
 
 - **evaluation/run_pipeline.py**: Lightweight single-model evaluation CLI.
   Useful for quick validation, dry-runs, and custom inference functions.
 
-Both systems share ``evaluation/answer_evaluator.py`` for LLM-as-judge
-scoring to avoid code duplication.
+Both systems are unified under the ``evaluation/`` package, sharing
+``evaluation/answer_evaluator.py`` for LLM-as-judge scoring.
 
 Features:
 - Config hot reload support
@@ -534,7 +536,7 @@ class BatchPipeline:
 
     def _get_judge_llm(self):
         if self._judge_llm is None:
-            from evaluate_results import get_llm
+            from evaluation.evaluate_results import get_llm
             from models_config import ensure_models_registered
 
             judge_cfg = self.config.judge
@@ -707,7 +709,7 @@ class BatchPipeline:
                 result.success = True
 
                 if self.config.judge.enabled:
-                    from evaluate_results import judge_answer, is_empty_answer
+                    from evaluation.evaluate_results import judge_answer, is_empty_answer
                     judge_cfg = self.config.judge
                     answer = result.natural_language_answer
                     if is_empty_answer(answer):
@@ -922,7 +924,7 @@ class BatchPipeline:
                 result.success = True
 
                 if self.config.judge.enabled:
-                    from evaluate_results import judge_answer, is_empty_answer
+                    from evaluation.evaluate_results import judge_answer, is_empty_answer
                     judge_cfg = self.config.judge
                     if is_empty_answer(answer):
                         result.judge = {

@@ -47,10 +47,24 @@ from .test_loader import TestDatasetLoader
 from .evaluation_runner import EvaluationRunner
 from .answer_evaluator import AnswerEvaluator
 from .run_pipeline import run_pipeline
+from .compare_results import ResultComparator, find_latest_run
+from .evaluate_results import (
+    JudgeConfig, load_judge_config, get_llm, score_answer,
+    build_judge_summary, is_empty_answer, judge_answer,
+)
 
 __all__ = [
     "TestDatasetLoader",
     "EvaluationRunner",
     "AnswerEvaluator",
     "run_pipeline",
+    "ResultComparator",
+    "find_latest_run",
+    "JudgeConfig",
+    "load_judge_config",
+    "get_llm",
+    "score_answer",
+    "build_judge_summary",
+    "is_empty_answer",
+    "judge_answer",
 ]

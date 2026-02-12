@@ -22,8 +22,16 @@ crossbar_llm/backend/evaluation/
 ├── test_loader.py          # Module 1: Load test data
 ├── evaluation_runner.py    # Module 2: Run evaluation
 ├── answer_evaluator.py     # Module 3: Judge answers
+├── run_pipeline.py         # One-command CLI pipeline
+├── compare_results.py      # Multi-model result comparison (consolidated from backend/)
+├── evaluate_results.py     # LLM-as-judge post-processing (consolidated from backend/)
 └── README.md               # Comprehensive documentation
 ```
+
+> **Note:** The old top-level files `compare_results.py`, `evaluate_results.py`,
+> and `evaluation_example.py` in `crossbar_llm/backend/` are now thin
+> backward-compatible wrappers that re-export from `evaluation/`.  All new code
+> should import from `evaluation.*` directly.
 
 ## Breaking Changes
 
