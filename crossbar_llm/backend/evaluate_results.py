@@ -376,6 +376,41 @@ def render_results_by_model(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def is_empty_answer(answer: str) -> bool:
+    """Check if answer is empty or N/A."""
+    if answer is None:
+        return True
+    text = str(answer).strip()
+    if not text:
+        return True
+    return text.lower() in {"n/a", "na"}
+
+
+def judge_answer(llm, question: str, expected: str, rationale: str, answer: str) -> dict:
+    """
+    Judge a single answer using an LLM-as-judge.
+
+    Args:
+        llm: A LangChain LLM instance
+        question: The question text
+        expected: Expected/benchmark answer
+        rationale: Expected reasoning/rationale
+        answer: Model's answer to evaluate
+
+    Returns:
+        Evaluation result dict with pass, reason, rationale_match, novelty_score,
+        reasoning_similarity_score, raw
+    """
+    judge_fn = _make_llm_judge_fn(llm)
+    evaluator = AnswerEvaluator(llm_judge_fn=judge_fn)
+    return evaluator.evaluate(
+        question=question,
+        model_answer=answer,
+        expected=expected,
+        rationale=rationale,
+    )
+
+
 def score_answer(evaluator: AnswerEvaluator, question: str, expected: str, rationale: str, answer: str):
     Logger.info("Scoring answer using AnswerEvaluator")
     result = evaluator.evaluate(

@@ -10,8 +10,8 @@ provider: "OpenRouter"  # Default provider for all models below
 # These will be auto-registered to models_config.py if not present
 models:
   # - "Qwen/Qwen3-32B"
-  - "deepseek-v3-2-251201"
-  # - "gemini-3-flash-preview"
+  # - "deepseek-v3-2-251201"
+  - "gemini-3-flash-preview"
   # - "gemini-3-pro-preview"
   # - "gpt-oss-120b"
 
@@ -29,7 +29,7 @@ questions:
   # Option 2: Load from Benchmark file
   benchmark:
     enabled: true
-    file: "Benchmark/v0119filtered.small.test.jsonl"
+    file: "/mnt/shared-storage-gpfs2/ai4scifm-gpfs02/zengchuanlong/workspace/BioBenchmark/in-house/keyword_hierarchy_v1/test.jsonl"
     # Select questions by index (1-based) or question_id
     # Leave both empty to test ALL questions
     indices: []  # Test with first question only
