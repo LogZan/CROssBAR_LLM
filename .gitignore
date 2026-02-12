@@ -8,7 +8,7 @@
 
 # Byproducts
 query_log*.log
-graph_schema.json
+graph_schema*
 *.log
 *.pkl
 

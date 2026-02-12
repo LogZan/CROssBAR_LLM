@@ -115,7 +115,7 @@ class QuestionConfig:
     """Question source configuration."""
     custom: list = field(default_factory=list)
     benchmark_enabled: bool = True
-    benchmark_file: str = "Benchmark/v0112.jsonl"
+    benchmark_file: str = "Benchmark/protein_centric_qa_v1/v0112.jsonl"
     indices: list = field(default_factory=list)
     question_ids: list = field(default_factory=list)
 
@@ -205,7 +205,7 @@ class BatchConfig:
             self.questions = QuestionConfig(
                 custom=questions_data.get("custom", []),
                 benchmark_enabled=questions_data.get("benchmark", {}).get("enabled", True),
-                benchmark_file=questions_data.get("benchmark", {}).get("file", "Benchmark/v0112.jsonl"),
+                benchmark_file=questions_data.get("benchmark", {}).get("file", "Benchmark/protein_centric_qa_v1/v0112.jsonl"),
                 indices=questions_data.get("benchmark", {}).get("indices", []),
                 question_ids=questions_data.get("benchmark", {}).get("question_ids", []),
             )
