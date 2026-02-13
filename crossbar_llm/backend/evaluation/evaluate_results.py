@@ -232,6 +232,21 @@ def render_results_by_question(
             f"{m.get('total_answer_prompt_tokens', 0)}/{m.get('total_answer_output_tokens', 0)} |"
         )
 
+    # Add judge scores summary table
+    lines.append("\n## Judge Scores Summary")
+    lines.append("\n| Model | Avg Novelty | Avg Reasoning Similarity | Rationale Match Rate |")
+    lines.append("|-------|-------------|--------------------------|----------------------|")
+    
+    for model_name, stats in judge_summary.items():
+        avg_novelty = stats.get("avg_novelty_score", 0)
+        avg_similarity = stats.get("avg_reasoning_similarity_score", 0)
+        total = stats.get("total", 1)
+        rationale_match = stats.get("rationale_match", 0)
+        match_rate = f"{rationale_match}/{total}" if total > 0 else "0/0"
+        lines.append(
+            f"| {model_name} | {avg_novelty:.1f}/10 | {avg_similarity:.1f}/10 | {match_rate} |"
+        )
+
     lines.append("\n## Question Comparisons")
     for comp in comparisons:
         lines.append(f"\n### Question {comp['question_index']} (ID: {comp['question_id']})")
@@ -300,11 +315,24 @@ def render_results_by_question(
             status = "✅" if judge.get("pass") else "❌"
             reason = judge.get("reason") or "No judge result"
             rationale_match = judge.get("rationale_match")
+            novelty_score = judge.get("novelty_score", 0)
+            similarity_score = judge.get("reasoning_similarity_score", 0)
+            
             lines.append(f"\n**{model_name}** {status}")
             lines.append(f"> {reason}")
             if rationale_match is not None:
                 rm_status = "✅" if rationale_match else "⚠️"
                 lines.append(f"> Rationale match: {rm_status}")
+            lines.append(f"> Novelty score: {novelty_score}/10")
+            lines.append(f"> Reasoning similarity: {similarity_score}/10")
+            
+            # Add reasoning analysis if available
+            reasoning = result.get("reasoning_analysis")
+            if reasoning:
+                lines.append(f"> Reasoning efficiency: {reasoning.get('efficiency_score', 0):.1f}/10 "
+                            f"({reasoning.get('total_steps', 0)} steps, "
+                            f"{reasoning.get('success_rate', 0):.0%} success)")
+            
             raw = judge.get("raw")
             if raw:
                 lines.append(f"> Raw: {raw}")
@@ -343,6 +371,21 @@ def render_results_by_model(
             f"{m['total_answer_gen_time']:.1f} | {m['total_time_seconds']:.1f} | "
             f"{m.get('total_cypher_prompt_tokens', 0)}/{m.get('total_cypher_output_tokens', 0)} | "
             f"{m.get('total_answer_prompt_tokens', 0)}/{m.get('total_answer_output_tokens', 0)} |"
+        )
+
+    # Add judge scores summary table
+    lines.append("\n## Judge Scores Summary")
+    lines.append("\n| Model | Avg Novelty | Avg Reasoning Similarity | Rationale Match Rate |")
+    lines.append("|-------|-------------|--------------------------|----------------------|")
+    
+    for model_name, stats in judge_summary.items():
+        avg_novelty = stats.get("avg_novelty_score", 0)
+        avg_similarity = stats.get("avg_reasoning_similarity_score", 0)
+        total = stats.get("total", 1)
+        rationale_match = stats.get("rationale_match", 0)
+        match_rate = f"{rationale_match}/{total}" if total > 0 else "0/0"
+        lines.append(
+            f"| {model_name} | {avg_novelty:.1f}/10 | {avg_similarity:.1f}/10 | {match_rate} |"
         )
 
     lines.append("\n---")
@@ -404,11 +447,15 @@ def render_results_by_model(
             judge = judge_map.get(model_name, {}).get(q_index, {})
             status = "✅" if judge.get("pass") else "❌"
             reason = judge.get("reason") or "No judge result"
+            novelty_score = judge.get("novelty_score", 0)
+            similarity_score = judge.get("reasoning_similarity_score", 0)
+            
             lines.append("\n**Judge:**")
             lines.append(f"> {status} {reason}")
             if "rationale_match" in judge:
                 rm_status = "✅" if judge.get("rationale_match") else "⚠️"
                 lines.append(f"> Rationale match: {rm_status}")
+            lines.append(f"> Novelty: {novelty_score}/10, Reasoning similarity: {similarity_score}/10")
             if judge.get("raw"):
                 lines.append(f"> Raw: {judge.get('raw')}")
 
