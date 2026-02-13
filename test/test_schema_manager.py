@@ -225,6 +225,34 @@ class TestSchemaManager(unittest.TestCase):
         # Generate filtered prompt
         filtered_prompt = manager.generate_schema_prompt(relevant_nodes=["Protein"])
         self.assertIn("Protein", filtered_prompt)
+        
+    def test_annotation_guidance_in_prompt(self):
+        """Test that annotation data storage guidance is included in schema prompt."""
+        manager = SchemaManager(self.schema_path)
+        
+        # Generate prompt
+        prompt = manager.generate_schema_prompt()
+        
+        # Check for annotation section
+        self.assertIn("IMPORTANT: Annotation Data Storage Location", prompt)
+        self.assertIn("relationship properties", prompt.lower())
+        
+        # Check for specific annotation relationships
+        self.assertIn("Protein_has_catalytic_activity", prompt)
+        self.assertIn("ecNumber", prompt)
+        self.assertIn("Protein_has_cofactor", prompt)
+        self.assertIn("Protein_has_binding_site_feature", prompt)
+        self.assertIn("Protein_has_signal_feature", prompt)
+        self.assertIn("Protein_has_subunit", prompt)
+        
+        # Check for correct pattern example
+        self.assertIn("-[rel:", prompt)
+        self.assertIn("rel.ecNumber", prompt)
+        
+        # Check for wrong pattern example
+        self.assertIn("WRONG", prompt)
+        self.assertIn("ca.ecNumber", prompt)
+        self.assertIn("Returns null", prompt)
 
     def test_missing_schema_file(self):
         """Test behavior when schema file doesn't exist."""

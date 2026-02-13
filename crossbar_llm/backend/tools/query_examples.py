@@ -23,12 +23,48 @@ RETURN p.primaryAccession, p.geneName, p.fullName, p.sequence""",
         "explanation": "Use primaryAccession (primary key) for direct protein lookup",
     },
     "enzyme_classification": {
-        "description": "Query protein's enzyme classification",
-        "question": "What is the enzyme classification of protein P00533?",
-        "cypher": """MATCH (p:Protein {primaryAccession: 'P00533'})
-      -[:Protein_has_catalytic_activity]->(ca:CatalyticActivityAnnotation)
-RETURN ca.ecNumber, ca.texts""",
-        "explanation": "Use Protein_has_catalytic_activity relationship to find EC numbers",
+        "description": "Query protein's enzyme classification (EC number)",
+        "question": "What is the EC number of EGFR protein?",
+        "cypher": """MATCH (g:Gene {geneName: 'EGFR'})-[:Gene_encodes_protein]->(p:Protein)
+MATCH (p)-[rel:Protein_has_catalytic_activity]->()
+RETURN rel.ecNumber AS ec_number, 
+       rel.name AS reaction_name, 
+       rel.database AS database""",
+        "wrong_cypher": """// ❌ WRONG: Trying to access node properties
+MATCH (p)-[:Protein_has_catalytic_activity]->(ca)
+RETURN ca.ecNumber  // Returns null""",
+        "explanation": "EC number is stored in RELATIONSHIP properties. Use -[rel:Protein_has_catalytic_activity]->() pattern and access rel.ecNumber, NOT node properties.",
+    },
+    "cofactor_query": {
+        "description": "Query protein's cofactor requirements",
+        "question": "What cofactors does ACE protein require?",
+        "cypher": """MATCH (g:Gene {geneName: 'ACE'})-[:Gene_encodes_protein]->(p:Protein)
+MATCH (p)-[rel:Protein_has_cofactor]->()
+RETURN rel.name AS cofactor_name, 
+       rel.database AS database,
+       rel.texts AS cofactor_info""",
+        "explanation": "Cofactor data is in relationship properties (rel.name, rel.database, rel.texts)",
+    },
+    "binding_site_query": {
+        "description": "Query protein's binding sites",
+        "question": "What are the binding sites in protein P12345?",
+        "cypher": """MATCH (p:Protein {primaryAccession: 'P12345'})
+      -[rel:Protein_has_binding_site_feature]->()
+RETURN rel.name AS ligand_name,
+       rel.ligandPart_name AS ligand_part,
+       rel.start AS start_position,
+       rel.end AS end_position""",
+        "explanation": "Binding site information (ligand names, positions) is stored in relationship properties",
+    },
+    "signal_peptide_query": {
+        "description": "Query protein's signal peptide",
+        "question": "What is the signal peptide of KIT protein?",
+        "cypher": """MATCH (g:Gene {geneName: 'KIT'})-[:Gene_encodes_protein]->(p:Protein)
+MATCH (p)-[rel:Protein_has_signal_feature]->()
+RETURN rel.description AS signal_description,
+       rel.start AS start_position,
+       rel.end AS end_position""",
+        "explanation": "Signal peptide positions and descriptions are in relationship properties (rel.start, rel.end, rel.description)",
     },
     "gene_disease_association": {
         "description": "Find diseases associated with a gene",
@@ -50,9 +86,9 @@ RETURN f.texts AS functions""",
         "description": "Query protein's oligomeric state",
         "question": "What is the oligomeric state of FGFR1?",
         "cypher": """MATCH (g:Gene {geneName: 'FGFR1'})-[:Gene_encodes_protein]->(p:Protein)
-OPTIONAL MATCH (p)-[r:Protein_has_subunit]->(sa:SubunitAnnotation)
-RETURN r.texts AS subunit_description, sa.texts AS subunit_info""",
-        "explanation": "Subunit information can be in relationship or annotation node",
+OPTIONAL MATCH (p)-[rel:Protein_has_subunit]->()
+RETURN rel.texts AS subunit_description""",
+        "explanation": "Subunit information is stored in relationship property rel.texts",
     },
     "protein_location": {
         "description": "Find protein subcellular location",
@@ -127,6 +163,13 @@ def get_relevant_examples(question: str, max_examples: int = 3) -> str:
         "enzyme": ["enzyme_classification"],
         "catalytic": ["enzyme_classification"],
         "ec number": ["enzyme_classification"],
+        "ec": ["enzyme_classification"],
+        "cofactor": ["cofactor_query"],
+        "binding site": ["binding_site_query"],
+        "binding": ["binding_site_query"],
+        "ligand": ["binding_site_query"],
+        "signal": ["signal_peptide_query"],
+        "signal peptide": ["signal_peptide_query"],
         "gene": ["protein_by_gene", "gene_disease_association"],
         "protein": ["protein_by_accession", "protein_by_gene"],
         "disease": ["gene_disease_association"],
@@ -176,9 +219,13 @@ def get_relevant_examples(question: str, max_examples: int = 3) -> str:
 
         if "wrong_cypher" in ex:
             lines.append(f"**❌ Wrong**:\n```cypher\n{ex['wrong_cypher']}\n```")
-            lines.append(f"**Error**: {ex['error']}")
+            if "error" in ex:
+                lines.append(f"**Error**: {ex['error']}")
 
-        lines.append(f"**✅ Correct**:\n```cypher\n{ex['cypher'].strip()}\n```")
+        # Handle both 'cypher' and 'corrected_cypher' keys
+        cypher_key = 'cypher' if 'cypher' in ex else 'corrected_cypher'
+        if cypher_key in ex:
+            lines.append(f"**✅ Correct**:\n```cypher\n{ex[cypher_key].strip()}\n```")
         lines.append(f"**💡 Tip**: {ex['explanation']}\n")
 
     return "\n".join(lines)
