@@ -50,7 +50,7 @@ class JudgeConfig:
     enabled: bool = True
     model: str = "gemini-3-flash-preview"
     temperature: float = 0
-    max_tokens: int = 256
+    max_tokens: int = 512  # Increased from 256 to ensure complete JSON output with all fields
 
 
 def load_judge_config(config_path: Path) -> JudgeConfig:
@@ -63,7 +63,7 @@ def load_judge_config(config_path: Path) -> JudgeConfig:
         enabled=judge.get("enabled", True),
         model=judge.get("model", "gemini-3-flash-preview"),
         temperature=judge.get("temperature", 0),
-        max_tokens=judge.get("max_tokens", 256),
+        max_tokens=judge.get("max_tokens", 512),  # Increased default from 256
     )
 
 

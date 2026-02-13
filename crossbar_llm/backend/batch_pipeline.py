@@ -189,7 +189,7 @@ class JudgeConfig:
     enabled: bool = True
     model: str = "gpt-oss-120b"
     temperature: float = 0
-    max_tokens: int = 256
+    max_tokens: int = 512  # Increased from 256 to ensure complete JSON output with all fields
 
 
 class BatchConfig:
@@ -301,7 +301,7 @@ class BatchConfig:
                 enabled=judge_data.get("enabled", True),
                 model=judge_data.get("model", "gpt-oss-120b"),
                 temperature=judge_data.get("temperature", 0),
-                max_tokens=judge_data.get("max_tokens", 256),
+                max_tokens=judge_data.get("max_tokens", 512),  # Increased default from 256
             )
             
             self._config_hash = new_hash
@@ -944,6 +944,10 @@ class BatchPipeline:
                         result.judge = {
                             "pass": False,
                             "reason": "Empty or N/A answer",
+                            "rationale_match": False,
+                            "novelty_score": 0,
+                            "reasoning_similarity_score": 0,
+                            "raw": "",
                             "model": judge_cfg.model,
                         }
                     else:
@@ -959,11 +963,14 @@ class BatchPipeline:
                             "pass": judge.get("pass", False),
                             "reason": judge.get("reason", ""),
                             "rationale_match": judge.get("rationale_match", False),
+                            "novelty_score": judge.get("novelty_score", 0),
+                            "reasoning_similarity_score": judge.get("reasoning_similarity_score", 0),
                             "raw": judge.get("raw", ""),
                             "model": judge_cfg.model,
                         }
                     self.logger.info(
                         f"  [{model_name}] Question {question_index} judge: pass={result.judge.get('pass')} "
+                        f"novelty={result.judge.get('novelty_score')} similarity={result.judge.get('reasoning_similarity_score')} "
                         f"reason={result.judge.get('reason')}"
                     )
             except Exception as e:

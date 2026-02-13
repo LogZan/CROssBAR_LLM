@@ -64,6 +64,10 @@ class ResultComparator:
             "models": {}
         }
         
+        # Import reasoning analyzer
+        from .reasoning_analyzer import ReasoningAnalyzer
+        analyzer = ReasoningAnalyzer()
+        
         for model_name, model_data in self.models.items():
             for q in model_data.get("questions", []):
                 if q["question_index"] == question_index:
@@ -73,7 +77,8 @@ class ResultComparator:
                         comparison["benchmark_output"] = q.get("benchmark_output")
                         comparison["benchmark_rationale"] = q.get("benchmark_rationale")
                     
-                    comparison["models"][model_name] = {
+                    trace = q.get("multi_step_trace", [])
+                    model_result = {
                         "generated_query": q.get("generated_query"),
                         "query_result": q.get("query_result"),
                         "natural_language_answer": q.get("natural_language_answer"),
@@ -91,8 +96,14 @@ class ResultComparator:
                         "answer_output_tokens": q.get("answer_output_tokens", 0),
                         "success": q.get("success", False),
                         "error": q.get("error"),
-                        "multi_step_trace": q.get("multi_step_trace", []),
+                        "multi_step_trace": trace,
                     }
+                    
+                    # Add reasoning analysis if trace exists
+                    if trace:
+                        model_result["reasoning_analysis"] = analyzer.analyze_trace(trace)
+                    
+                    comparison["models"][model_name] = model_result
                     break
         
         return comparison
@@ -163,9 +174,14 @@ class ResultComparator:
             for model_name, result in comp["models"].items():
                 result["execution_time_seconds"] = round(result["execution_time_seconds"], 2)
         
+        # Add reasoning analysis
+        from .reasoning_analyzer import analyze_all_traces
+        reasoning_analysis = analyze_all_traces(comparisons)
+        
         data = {
             "generated_at": datetime.now().isoformat(),
             "comparisons": comparisons,
+            "reasoning_analysis": reasoning_analysis,
         }
         
         with open(output_path, "w", encoding="utf-8") as f:
