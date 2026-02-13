@@ -1,29 +1,40 @@
 from langchain_core.prompts import PromptTemplate
 
 
-CYPHER_GENERATION_TEMPLATE = """Task: Generate a Cypher query.
+CYPHER_GENERATION_TEMPLATE = """Task: Generate a Cypher query for the CROssBARv2 knowledge graph.
+
+{schema_text}
 
 Resolved schema (filtered JSON for the target entity):
 {resolved_schema}
 Anchor entities (use id when present):
 {anchor_entities}
 
-Rules (must follow):
-- Start with MATCH. Output ONLY Cypher (no markdown).
-- The goal is to retrieve rich, question-relevant context for reasoning, not to do logical filtering.
-- Use ONLY relationship types and properties that appear in the schema. 
-- Do NOT invent headers; do NOT use edge props on nodes or node props on edges.
-- Prefer anchor id matches over name/fuzzy.
-- Do not add directionality not shown in schema.
-- Avoid double quotes for string literals.
+STRICT RULES (violations will cause query failure):
+1. Start with MATCH. Output ONLY valid Cypher (no markdown, no explanation).
+2. Node labels go ONLY inside (parentheses): (variable:NodeType)
+   - Example: (p:Protein), (d:Drug), (g:Gene)
+3. Relationship types go ONLY inside [square brackets]: -[r:RelType]->
+   - Example: -[:Drug_targets_protein]->, -[rel:Gene_encodes_protein]->
+4. NEVER use a relationship type as a node label or a node type as a relationship.
+5. Use ONLY relationship types, node types, and properties listed in the schema above.
+6. Do NOT invent or guess property names. Use ONLY properties from the schema.
+7. Do NOT use node properties on relationships or relationship properties on nodes.
+8. For annotation/feature data, access RELATIONSHIP properties with rel.property,
+   not target node properties.
+   - CORRECT:  MATCH (p:Protein)-[rel:Protein_has_catalytic_activity]->() RETURN rel.ecNumber
+   - WRONG:    MATCH (p:Protein)-[:Protein_has_catalytic_activity]->(ca) RETURN ca.ecNumber
+9. Prefer anchor id matches over name/fuzzy.
+10. Follow relationship direction as shown in the schema.
+11. Avoid double quotes for string literals; use single quotes.
 
 Evidence plan (as Cypher comments):
 - Write the evidence plan as Cypher comments using `//` so the query remains valid.
-- List as more items as possible to cover all aspects of the question.
+- List as many items as possible to cover all aspects of the question.
 - For each item, specify whether it's a node property or edge property:
   - node:<Label>.<property>
   - edge:<RELATIONSHIP>.<property>
-- Use only items present in the resolved schema.
+- Use only items present in the schema above.
 
 Note on schema structure:
 - target_node is the anchor.
@@ -34,22 +45,25 @@ Question:
 """
 
 CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["node_types", "node_properties", "edge_properties", "edges", "resolved_schema", "anchor_entities", "question",], 
+    input_variables=["schema_text", "resolved_schema", "anchor_entities", "question"],
     template=CYPHER_GENERATION_TEMPLATE
 )
 
-VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE = """Task:You are an AI assistant specialized in converting natural language questions into Cypher queries for vector search in Neo4j. 
+VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE = """Task: You are an AI assistant specialized in converting natural language questions into Cypher queries for vector search in Neo4j.
 Your task is to generate a Cypher query based on the given question and database schema.
+
+{schema_text}
+
 Instructions:
-The user can ask questions in 2 ways. Firstly, user can provide their own embeddings and ask for the most similar results at the 
+The user can ask questions in 2 ways. Firstly, user can provide their own embeddings and ask for the most similar results at the
 given vector index. Secondly, they may ask you to perform a vector similarity search in the database.
 On top of that, you may need to create a normal cypher query after performing a vector search based on the user's question. If this is the case;
-    - Use only the provided relationship types and properties in the schema.
-    - Do not use any other relationship types or properties that are not provided.
-    - Make sure directionality of relationships is consistent with provided schema.
-    - Do not add any directionality to generated Cypher query.
+    - Use ONLY the node types, relationship types and properties listed in the schema above.
+    - Node labels go ONLY inside (parentheses): (variable:NodeType).
+    - Relationship types go ONLY inside [square brackets]: -[r:RelType]->.
+    - NEVER use a relationship type as a node label or a node type as a relationship.
+    - Make sure directionality of relationships is consistent with the schema above.
     - Do not include any text except the generated Cypher query.
-    - Do not make up node types, edge types or their properties that do not exist in the provided schema. Use your internal knowledge to map question to node types, edge types or their properties in the provided schema.
     - Do not capitalize given biological entity names in question. Use it as is.
     - Make sure relationship is correct in generated Cypher query.
 
@@ -60,14 +74,6 @@ Note: Always use vector search first and then normal cypher query if needed. If 
 Note: If you are returning nodes, always return their ids and names.   
 Vector index:
 {vector_index}   
-Nodes:
-{node_types}
-Node properties:
-{node_properties}
-Relationship properties:
-{edge_properties}
-Relationships:
-{edges}
 Resolved schema (JSON for the specific target entity):
 {resolved_schema}
 Anchor entities (high confidence, use their ids directly when possible):
@@ -127,7 +133,7 @@ The question is:
 
 
 VECTOR_SEARCH_CYPHER_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["vector_index","node_types", "node_properties", "edge_properties", "edges", "resolved_schema", "anchor_entities", "question",], 
+    input_variables=["vector_index", "schema_text", "resolved_schema", "anchor_entities", "question"],
     template=VECTOR_SEARCH_CYPHER_GENERATION_TEMPLATE
 )
 

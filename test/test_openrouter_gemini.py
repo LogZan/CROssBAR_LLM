@@ -116,10 +116,9 @@ try:
     # Format with full schema
     test_question = "What proteins does aspirin target?"
     formatted_input = {
-        "node_types": schema["nodes"],
-        "node_properties": schema["node_properties"],
-        "edge_properties": schema["edge_properties"],
-        "edges": schema["edges"],
+        "schema_text": "",
+        "resolved_schema": "{}",
+        "anchor_entities": "",
         "question": test_question
     }
     
