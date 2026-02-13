@@ -453,16 +453,17 @@ class TestFormatSchemaForLLM(unittest.TestCase):
         self.assertIn("geneName", result)
 
     def test_format_schema_infers_concrete_label_for_all_abstract_edges(self):
-        """Relationship types with only abstract edges should infer concrete labels."""
+        """Relationship types with only abstract edges should infer the source from the name."""
         manager = SchemaManager(self.schema_path)
         result = manager.format_schema_for_llm()
-        # Protein_has_allergen has only abstract edges but should be inferred
+        # Protein_has_allergen has only abstract edges but the source should be
+        # inferred as Protein from the relationship name prefix.
         self.assertIn("Protein_has_allergen", result)
-        # The source should be inferred as Protein from the relationship name
         rel_section = result.split("## Relationship types")[1].split("## Critical rules")[0]
         allergen_line = [l for l in rel_section.split("\n") if "Protein_has_allergen" in l]
         self.assertTrue(len(allergen_line) > 0)
-        self.assertIn("Protein", allergen_line[0])
+        # Source should be "Protein" (inferred from "Protein_has_allergen")
+        self.assertIn("(Protein)->", allergen_line[0])
 
     def test_format_schema_empty_schema(self):
         """format_schema_for_llm should return empty string for empty schema."""

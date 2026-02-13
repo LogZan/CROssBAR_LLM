@@ -551,10 +551,9 @@ class SchemaManager:
         ``Protein_has_toxic_dose`` → source is ``Protein``) and from the
         set of available labels (pick the most specific non-abstract one).
         """
-        # 1. Try to pick the most specific non-abstract label from the list
+        # 1. Try to pick a non-abstract label from the list
         concrete = [l for l in labels if l not in self.ABSTRACT_NODE_LABELS]
         if concrete:
-            # Return the longest (typically most specific) label
             return max(set(concrete), key=len)
 
         # 2. Infer from relationship name for the source position
@@ -564,12 +563,23 @@ class SchemaManager:
             if prefix in self.node_labels and prefix not in self.ABSTRACT_NODE_LABELS:
                 return prefix
 
-        # 3. For target position, pick the most specific abstract label
-        #    that is also a known node label (prefer the longest name).
+        # 3. For target: pick the label that is NOT in
+        #    ABSTRACT_NODE_LABELS *and* exists as a node type.
+        #    Fall back to the least-generic abstract label by
+        #    preferring labels that appear fewer times (more specific).
         if labels:
-            # Sort by name length descending – longer names tend to be
-            # more specific (e.g. Toxic_doseAnnotation > FunctionalAnnotation)
-            candidates = sorted(set(labels), key=len, reverse=True)
+            unique = sorted(set(labels))
+            # Prefer non-abstract first (should have been caught above, but be safe)
+            for c in unique:
+                if c not in self.ABSTRACT_NODE_LABELS and c in self.node_labels:
+                    return c
+            # All labels are abstract: rank by how many edges use them
+            #   (more niche abstract labels are more specific)
+            label_freq = {}
+            for l in labels:
+                label_freq[l] = label_freq.get(l, 0) + 1
+            # Least frequent = most specific
+            candidates = sorted(unique, key=lambda x: label_freq.get(x, 0))
             for c in candidates:
                 if c in self.node_labels:
                     return c
