@@ -1,0 +1,390 @@
+"""
+Schema Manager for CROssBARv2 Knowledge Graph.
+
+This module provides schema management capabilities including:
+- Loading and parsing graph schema
+- Schema validation for Cypher queries
+- Schema-based prompt generation for LLMs
+"""
+
+import json
+import logging
+import os
+import re
+from typing import Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+class SchemaManager:
+    """Manages knowledge graph schema and provides query assistance."""
+
+    def __init__(self, schema_path: Optional[str] = None):
+        """
+        Initialize SchemaManager.
+
+        Args:
+            schema_path: Path to graph_schema.json. If None, looks in current directory.
+        """
+        if schema_path is None:
+            schema_path = os.path.join(os.getcwd(), "graph_schema.json")
+
+        self.schema_path = schema_path
+        self.schema = self._load_schema()
+
+        # Build lookup structures for fast access
+        self._build_lookups()
+
+    def _load_schema(self) -> Dict:
+        """Load schema from JSON file."""
+        if not os.path.exists(self.schema_path):
+            logger.warning(
+                f"Schema file not found at {self.schema_path}. "
+                "Schema validation will be limited."
+            )
+            return {
+                "nodes": [],
+                "node_properties": [],
+                "edges": [],
+                "edge_properties": [],
+            }
+
+        try:
+            with open(self.schema_path, "r") as f:
+                schema = json.load(f)
+            logger.info(f"Loaded schema from {self.schema_path}")
+            return schema
+        except Exception as e:
+            logger.error(f"Failed to load schema: {e}")
+            return {
+                "nodes": [],
+                "node_properties": [],
+                "edges": [],
+                "edge_properties": [],
+            }
+
+    def _build_lookups(self):
+        """Build fast lookup structures from schema."""
+        # Extract node labels
+        nodes_data = self.schema.get("nodes", [])
+        if nodes_data and isinstance(nodes_data[0], dict):
+            self.node_labels = set(nodes_data[0].get("labels", []))
+        else:
+            self.node_labels = set()
+
+        # Build node properties map: {node_label: [property_names]}
+        self.node_props_map: Dict[str, Set[str]] = {}
+        for node_prop in self.schema.get("node_properties", []):
+            label = node_prop.get("labels")
+            if label:
+                props = node_prop.get("properties", [])
+                prop_names = {p.get("property") for p in props if p.get("property")}
+                self.node_props_map[label] = prop_names
+
+        # Build edge map: {edge_type: True}
+        self.edge_types = set()
+        for edge in self.schema.get("edges", []):
+            if isinstance(edge, str):
+                # Extract edge type from pattern like "(Protein)-[:edge_type]->(Node)"
+                match = re.search(r"\[:([^\]]+)\]", edge)
+                if match:
+                    self.edge_types.add(match.group(1))
+
+        # Build edge properties map
+        self.edge_props_map: Dict[str, Set[str]] = {}
+        for edge_prop in self.schema.get("edge_properties", []):
+            edge_type = edge_prop.get("type")
+            if edge_type:
+                props = edge_prop.get("properties", [])
+                prop_names = {p.get("property") for p in props if p.get("property")}
+                self.edge_props_map[edge_type] = prop_names
+
+    def get_node_properties(self, node_type: str) -> List[str]:
+        """
+        Return all valid properties for a node type.
+
+        Args:
+            node_type: The node label (e.g., "Protein", "Gene")
+
+        Returns:
+            List of property names
+        """
+        return list(self.node_props_map.get(node_type, set()))
+
+    def get_relationships(
+        self, source_node: Optional[str] = None, target_node: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Return relationship types, optionally filtered by source/target nodes.
+
+        Args:
+            source_node: Optional source node type to filter
+            target_node: Optional target node type to filter
+
+        Returns:
+            List of relationship dictionaries
+        """
+        relationships = []
+        for edge in self.schema.get("edges", []):
+            if isinstance(edge, str):
+                # Parse pattern: (SourceNode)-[:EdgeType]->(TargetNode)
+                match = re.match(
+                    r"\(:(\w+)\)-\[:([^\]]+)\]->\(:(\w+)\)", edge
+                )
+                if match:
+                    src, edge_type, tgt = match.groups()
+                    if source_node and src != source_node:
+                        continue
+                    if target_node and tgt != target_node:
+                        continue
+                    relationships.append({
+                        "type": edge_type,
+                        "source": src,
+                        "target": tgt,
+                        "properties": list(self.edge_props_map.get(edge_type, set())),
+                    })
+        return relationships
+
+    def get_primary_key(self, node_type: str) -> Optional[str]:
+        """
+        Return the primary key property for a node type.
+
+        Args:
+            node_type: The node label
+
+        Returns:
+            Primary key property name, or None if not found
+
+        Note:
+            This uses heuristics. Common primary keys:
+            - Protein: primaryAccession
+            - Gene: geneName
+            - Other nodes: typically first unique property
+        """
+        # Known primary keys for common node types
+        primary_keys = {
+            "Protein": "primaryAccession",
+            "Gene": "geneName",
+            "Disease": "diseaseId",
+            "Drug": "drugId",
+            "Pathway": "pathwayId",
+        }
+
+        if node_type in primary_keys:
+            return primary_keys[node_type]
+
+        # Fallback: look for common ID patterns in properties
+        props = self.get_node_properties(node_type)
+        for prop in props:
+            prop_lower = prop.lower()
+            if any(keyword in prop_lower for keyword in ["id", "accession", "name"]):
+                return prop
+
+        # Return first property if available
+        return props[0] if props else None
+
+    def get_searchable_properties(self, node_type: str) -> List[str]:
+        """
+        Return properties commonly used for searching/matching.
+
+        Args:
+            node_type: The node label
+
+        Returns:
+            List of searchable property names
+        """
+        # Known searchable properties for common types
+        searchable_map = {
+            "Protein": ["primaryAccession", "geneName", "uniProtkbId"],
+            "Gene": ["geneName", "ensemblId"],
+            "Disease": ["diseaseId", "diseaseName"],
+            "Drug": ["drugId", "drugName"],
+        }
+
+        if node_type in searchable_map:
+            # Filter to only properties that exist in schema
+            all_props = set(self.get_node_properties(node_type))
+            return [p for p in searchable_map[node_type] if p in all_props]
+
+        # Fallback: return primary key and name-like properties
+        props = self.get_node_properties(node_type)
+        primary = self.get_primary_key(node_type)
+        searchable = []
+
+        if primary:
+            searchable.append(primary)
+
+        for prop in props:
+            prop_lower = prop.lower()
+            if "name" in prop_lower or "symbol" in prop_lower:
+                if prop not in searchable:
+                    searchable.append(prop)
+
+        return searchable if searchable else props[:3]
+
+    def generate_schema_prompt(
+        self, relevant_nodes: Optional[List[str]] = None
+    ) -> str:
+        """
+        Generate schema description for LLM prompts.
+
+        Args:
+            relevant_nodes: Optional list of node types to focus on
+
+        Returns:
+            Formatted schema description string
+        """
+        if not self.schema or not self.node_labels:
+            return "# CROssBARv2 Knowledge Graph Schema\n\nSchema not available."
+
+        lines = ["# CROssBARv2 Knowledge Graph Schema\n"]
+
+        # Filter nodes if requested
+        nodes_to_show = (
+            relevant_nodes
+            if relevant_nodes
+            else sorted(list(self.node_labels))[:10]  # Limit to first 10 alphabetically
+        )
+
+        # Node information
+        for node_type in nodes_to_show:
+            if node_type not in self.node_labels:
+                continue
+
+            lines.append(f"\n## {node_type} Node")
+            primary = self.get_primary_key(node_type)
+            if primary:
+                lines.append(f"Primary Key: {primary}")
+
+            searchable = self.get_searchable_properties(node_type)
+            if searchable:
+                lines.append(f"Searchable Properties: {', '.join(searchable)}")
+
+            all_props = self.get_node_properties(node_type)
+            if all_props and len(all_props) <= 10:
+                lines.append(f"All Properties: {', '.join(all_props)}")
+            elif all_props:
+                lines.append(f"Properties: {', '.join(all_props[:10])} (+ {len(all_props) - 10} more)")
+
+        # Relationship information
+        lines.append("\n## Relationships")
+        relationships = self.get_relationships()
+        if relationships:
+            shown = 0
+            for rel in relationships[:20]:  # Limit to avoid huge prompts
+                lines.append(
+                    f"({rel['source']})-[:{rel['type']}]->({rel['target']})"
+                )
+                shown += 1
+            if len(relationships) > shown:
+                lines.append(f"... and {len(relationships) - shown} more relationships")
+        else:
+            lines.append("(No relationship information available)")
+
+        # Query guidelines
+        lines.append("\n## Query Guidelines")
+        lines.append("1. ALWAYS use searchable properties for node matching")
+        lines.append("2. Use primary keys when the exact identifier is known")
+        lines.append("3. NEVER use 'id' property unless explicitly listed")
+        lines.append("4. Keep queries simple (avoid excessive OPTIONAL MATCH)")
+        lines.append("5. Validate property names against the schema above")
+
+        return "\n".join(lines)
+
+    def validate_cypher(
+        self, cypher_query: str
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Validate a Cypher query against the schema.
+
+        Args:
+            cypher_query: The Cypher query to validate
+
+        Returns:
+            (is_valid, error_message, suggestion)
+        """
+        errors = []
+        suggestions = []
+
+        if not self.schema or not self.node_labels:
+            # Schema not available, cannot validate
+            return True, None, None
+
+        # Extract node patterns: (variable:Label {property: value})
+        node_patterns = re.findall(
+            r"\((\w*):(\w+)\s*(?:\{([^}]+)\})?\)", cypher_query, re.IGNORECASE
+        )
+
+        for var, label, props in node_patterns:
+            # Check if node label exists
+            if label not in self.node_labels:
+                errors.append(f"Unknown node type '{label}'")
+                similar = self._find_similar_label(label)
+                if similar:
+                    suggestions.append(f"Did you mean '{similar}'?")
+                continue
+
+            # Check properties if specified
+            if props:
+                valid_props = set(self.get_node_properties(label))
+                # Extract property names from the pattern
+                prop_names = re.findall(r'(\w+)\s*:', props)
+
+                for prop_name in prop_names:
+                    if prop_name not in valid_props:
+                        errors.append(
+                            f"{label} node does not support property '{prop_name}'"
+                        )
+                        # Suggest searchable properties
+                        searchable = self.get_searchable_properties(label)
+                        if searchable:
+                            suggestions.append(
+                                f"For {label}, use: {', '.join(searchable)}"
+                            )
+
+        # Check relationship types: -[:RelType]->
+        rel_patterns = re.findall(r'-\[:(\w+)\]->', cypher_query, re.IGNORECASE)
+
+        for rel_type in rel_patterns:
+            if rel_type not in self.edge_types:
+                errors.append(f"Unknown relationship type '{rel_type}'")
+                # Try to find similar
+                similar = self._find_similar_edge(rel_type)
+                if similar:
+                    suggestions.append(f"Did you mean '{similar}'?")
+
+        # Check for common mistakes
+        if re.search(r'\{\s*id\s*:', cypher_query, re.IGNORECASE):
+            # Check if any node actually has 'id' property
+            has_id = any('id' in self.node_props_map.get(node, set())
+                        for node in self.node_labels)
+            if not has_id:
+                errors.append("Using 'id' property, but most nodes don't support it")
+                suggestions.append("Use node-specific identifiers (e.g., geneName, primaryAccession)")
+
+        # Check for excessive OPTIONAL MATCH
+        optional_count = len(re.findall(r'\bOPTIONAL\s+MATCH\b', cypher_query, re.IGNORECASE))
+        if optional_count > 10:
+            errors.append(f"Query too complex ({optional_count} OPTIONAL MATCH clauses)")
+            suggestions.append("Consider simplifying or splitting into multiple queries")
+
+        if errors:
+            return False, "; ".join(errors), "; ".join(suggestions) if suggestions else None
+
+        return True, None, None
+
+    def _find_similar_label(self, label: str) -> Optional[str]:
+        """Find similar node label using simple string matching."""
+        label_lower = label.lower()
+        for node_label in self.node_labels:
+            if label_lower in node_label.lower() or node_label.lower() in label_lower:
+                return node_label
+        return None
+
+    def _find_similar_edge(self, edge_type: str) -> Optional[str]:
+        """Find similar edge type using simple string matching."""
+        edge_lower = edge_type.lower()
+        for et in self.edge_types:
+            if edge_lower in et.lower() or et.lower() in edge_lower:
+                return et
+        return None

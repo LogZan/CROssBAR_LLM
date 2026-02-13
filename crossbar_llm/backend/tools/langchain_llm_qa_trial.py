@@ -31,6 +31,10 @@ from .qa_templates import (
 )
 from .multi_hop_utils import parse_decision as _mh_parse_decision
 from .multi_hop_utils import summarize_evidence as _mh_summarize_evidence
+from .schema_manager import SchemaManager
+from .context_manager import ContextManager
+from .query_examples import get_relevant_examples
+from .reasoning_diagnostics import ReasoningDiagnostics
 from langchain_core.output_parsers import StrOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import Ollama, Replicate
@@ -390,6 +394,14 @@ class QueryChain:
             except Exception as e:
                 logging.error(f"Failed to initialize EntityCentricSchemaResolver: {e}")
                 self.resolver = None
+        
+        # Initialize SchemaManager for enhanced validation and prompts
+        try:
+            self.schema_manager = SchemaManager()
+            logging.info("SchemaManager initialized for query validation")
+        except Exception as e:
+            logging.warning(f"SchemaManager initialization failed: {e}")
+            self.schema_manager = None
 
     @timeout(180)
     @validate_call
@@ -434,6 +446,28 @@ class QueryChain:
         if self.search_type == "db_search":
             anchor_entities = self._format_anchor_entities(schema_context)
             resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
+            
+            # Add schema guidance and examples if SchemaManager is available
+            enhanced_question = question
+            if self.schema_manager:
+                try:
+                    # Get relevant examples based on the question
+                    examples = get_relevant_examples(question, max_examples=2)
+                    
+                    # Add schema reminders
+                    schema_reminders = (
+                        "\n\n## IMPORTANT SCHEMA REMINDERS:\n"
+                        "- For Protein nodes, use {primaryAccession: '...'} or {geneName: '...'}\n"
+                        "- For Gene nodes, use {geneName: '...'}\n"
+                        "- NEVER use {id: '...'} unless 'id' is explicitly in schema\n"
+                        "- Always check property names against the resolved schema above\n"
+                    )
+                    
+                    # Enhance question with examples and reminders
+                    enhanced_question = f"{question}\n{schema_reminders}\n{examples}"
+                except Exception as e:
+                    logging.warning(f"Failed to enhance question with schema guidance: {e}")
+            
             logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (db_search)")
             prompt_text = CYPHER_GENERATION_PROMPT.format(
                 node_types=schema_context["nodes"],
@@ -442,7 +476,7 @@ class QueryChain:
                 edges=schema_context["edges"],
                 resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
-                question=question,
+                question=enhanced_question,
             )
             self.last_cypher_prompt_tokens = _count_tokens(prompt_text)
             logging.getLogger("batch_pipeline").info("Cypher gen: invoking LLM")
@@ -455,7 +489,7 @@ class QueryChain:
                         "edges": schema_context["edges"],
                         "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
-                        "question": question,
+                        "question": enhanced_question,
                     }
                 )
                 .strip()
@@ -786,6 +820,7 @@ class MultiHopReasoner:
         query_chain_factory,
         max_steps: int = 5,
         search_type: str = "db_search",
+        schema_path: str = None,
     ):
         self.llm = llm
         self.neo4j_connection = neo4j_connection
@@ -793,6 +828,12 @@ class MultiHopReasoner:
         self.max_steps = max_steps
         self.search_type = search_type
         self.decision_chain = MULTI_HOP_DECISION_PROMPT | llm | StrOutputParser()
+        
+        # Initialize schema manager
+        self.schema_manager = SchemaManager(schema_path=schema_path)
+        
+        # Initialize context manager (with buffer for 98304 token limit)
+        self.context_manager = ContextManager(max_tokens=90000)
 
     # ------------------------------------------------------------------
     # helpers – delegate to lightweight multi_hop_utils module
@@ -812,24 +853,47 @@ class MultiHopReasoner:
     # ------------------------------------------------------------------
     def run(self, question: str, top_k: int = 5) -> dict:
         """
-        Execute multi-hop reasoning.
+        Execute multi-hop reasoning with schema validation and context management.
 
         Returns a dict with keys:
-            - evidence   : list of all collected KG results
-            - trace      : list[dict] per-step trace
+            - evidence   : list of all collected KG results (kept for compatibility)
+            - trace      : list[dict] per-step trace (from ContextManager)
             - final_action : the terminal action letter
+            - compressed : whether context compression was applied
+            - statistics : reasoning session statistics
         """
-        evidence: list = []
-        trace: list = []
+        # Reset context manager for new session
+        self.context_manager.reset()
+        
+        evidence: list = []  # Keep for compatibility
         current_node: str = "Not yet determined (initial step)"
         action: str = "C"
 
         for step in range(1, self.max_steps + 1):
-            # --- 1. ask the LLM what to do ---
+            # --- 1. Check early termination conditions ---
+            should_stop, termination_reason = self.context_manager.should_terminate()
+            if should_stop:
+                logging.warning(f"Early termination: {termination_reason}")
+                # Add termination step
+                self.context_manager.add_step({
+                    "step": step,
+                    "action": "C",
+                    "reason": f"Automatic termination: {termination_reason}",
+                    "status": "early_termination",
+                    "result_count": 0,
+                })
+                action = "C"
+                break
+            
+            # --- 2. Get compressed context for LLM ---
+            context_text = self.context_manager.get_context_for_llm()
+            
+            # --- 3. Ask the LLM what to do ---
+            # Note: 'evidence' field now contains compressed/managed context, not raw evidence
             decision_raw = self.decision_chain.invoke({
                 "question": question,
                 "current_node": current_node,
-                "evidence": self._summarize_evidence(evidence),
+                "evidence": context_text,  # Managed context from ContextManager
                 "step": str(step),
                 "max_steps": str(self.max_steps),
             })
@@ -842,20 +906,19 @@ class MultiHopReasoner:
                 f"action={action} reason={reason}"
             )
 
-            step_record = {
-                "step": step,
-                "action": action,
-                "reason": reason,
-                "decision_raw": decision_raw,
-            }
-
-            # --- 2. act on the decision ---
+            # --- 4. Act on the decision ---
             if action == "C":
                 # ANSWER – stop
-                step_record["status"] = "terminate"
-                trace.append(step_record)
+                self.context_manager.add_step({
+                    "step": step,
+                    "action": action,
+                    "reason": reason,
+                    "status": "terminate",
+                    "result_count": 0,
+                })
                 break
 
+            # Prepare query question based on action
             if action == "B":
                 # JUMP to a different node
                 target = decision.get("jump_target") or {}
@@ -863,70 +926,132 @@ class MultiHopReasoner:
                 identifier = target.get("identifier", "")
                 if node_type and identifier:
                     current_node = f"{node_type}: {identifier}"
-                    jump_question = (
+                    query_question = (
                         f"{question}\n\n"
                         f"Focus on {node_type} with identifier '{identifier}'."
                     )
                 else:
-                    jump_question = question
-
-                query, result = self._query_kg(jump_question, top_k)
-                step_record.update({
-                    "cypher": query,
-                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
-                    "status": "jump",
-                    "jump_target": {"node_type": node_type, "identifier": identifier},
-                })
-                if isinstance(result, list):
-                    evidence.extend(result)
-                elif result:
-                    evidence.append(result)
-
+                    query_question = question
+                jump_target = {"node_type": node_type, "identifier": identifier}
             elif action == "D":
                 # OVERVIEW – global query
                 hint = decision.get("overview_hint") or ""
-                overview_question = (
-                    f"{question}\n\n"
-                    f"Provide a global overview. {hint}"
-                ).strip()
-                query, result = self._query_kg(overview_question, top_k)
-                step_record.update({
-                    "cypher": query,
-                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
-                    "status": "overview",
-                })
-                if isinstance(result, list):
-                    evidence.extend(result)
-                elif result:
-                    evidence.append(result)
-
+                query_question = f"{question}\n\nProvide a global overview. {hint}".strip()
+                jump_target = None
             else:
-                # A  CONTINUE on the same node
+                # A - CONTINUE on the same node
                 hint = decision.get("focus_hint") or ""
-                continue_question = (
-                    f"{question}\n\n"
-                    f"Continue exploring: {current_node}. {hint}"
-                ).strip()
-                query, result = self._query_kg(continue_question, top_k)
-                step_record.update({
-                    "cypher": query,
-                    "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
-                    "status": "continue",
-                })
-                if isinstance(result, list):
-                    evidence.extend(result)
-                elif result:
-                    evidence.append(result)
+                query_question = f"{question}\n\nContinue exploring: {current_node}. {hint}".strip()
+                jump_target = None
 
-            trace.append(step_record)
+            # --- 5. Query KG with validation ---
+            query, result = self._query_kg_with_validation(query_question, top_k, question)
+            
+            # --- 6. Record step in context manager ---
+            step_data = {
+                "step": step,
+                "action": action,
+                "reason": reason,
+                "cypher": query,
+                "query_result": result,
+                "result_count": len(result) if isinstance(result, list) else (0 if not result else 1),
+                "status": "success" if result else "empty_result",
+            }
+            
+            if action == "B" and jump_target:
+                step_data["jump_target"] = jump_target
+            
+            self.context_manager.add_step(step_data)
+            
+            # Keep evidence for compatibility
+            if isinstance(result, list):
+                evidence.extend(result)
+            elif result:
+                evidence.append(result)
 
+        # Get statistics
+        stats = self.context_manager.get_statistics()
+        
         return {
             "evidence": evidence,
-            "trace": trace,
+            "trace": self.context_manager.get_trace(),
             "final_action": action,
+            "compressed": stats["compressed_steps"] > 0,
+            "statistics": stats,
         }
 
     # ------------------------------------------------------------------
+    def _query_kg_with_validation(
+        self, question: str, top_k: int, original_question: str
+    ) -> tuple:
+        """
+        Generate a Cypher query with schema validation and execute it.
+        
+        Args:
+            question: The query question
+            top_k: Maximum results to return
+            original_question: Original user question for context
+            
+        Returns:
+            (cypher, result) tuple
+        """
+        query_chain = self.query_chain_factory()
+        
+        # Try to generate and validate Cypher, with one retry
+        for attempt in range(2):
+            try:
+                cypher = query_chain.run_cypher_chain(question)
+            except Exception as e:
+                logging.warning(f"MultiHopReasoner cypher generation failed (attempt {attempt + 1}): {e}")
+                if attempt == 1:
+                    return "", []
+                continue
+            
+            # Validate against schema
+            is_valid, error, suggestion = self.schema_manager.validate_cypher(cypher)
+            
+            if is_valid:
+                # Query is valid, execute it
+                try:
+                    result = self.neo4j_connection.execute_query(cypher, top_k=top_k)
+                    
+                    # If empty result, provide diagnostics
+                    if not result or (isinstance(result, list) and len(result) == 0):
+                        diagnosis = ReasoningDiagnostics.diagnose_empty_result(cypher)
+                        logging.info(f"Empty result diagnosis:\n{diagnosis}")
+                    
+                    return cypher, result if result else []
+                except Exception as e:
+                    logging.warning(f"MultiHopReasoner query execution failed: {e}")
+                    return cypher, []
+            else:
+                # Query validation failed
+                logging.warning(
+                    f"Cypher validation failed (attempt {attempt + 1}):\n"
+                    f"Error: {error}\n"
+                    f"Suggestion: {suggestion}\n"
+                    f"Query: {cypher[:200]}"
+                )
+                
+                if attempt == 0:
+                    # Try to get LLM to correct it
+                    correction_prompt = (
+                        f"The generated Cypher query has validation errors:\n"
+                        f"Error: {error}\n"
+                        f"Suggestion: {suggestion}\n\n"
+                        f"Original question: {original_question}\n"
+                        f"Query context: {question}\n\n"
+                        f"Incorrect query:\n{cypher}\n\n"
+                        f"Please generate a corrected Cypher query that follows the schema rules."
+                    )
+                    question = correction_prompt  # Retry with correction prompt
+                else:
+                    # Failed both attempts
+                    logging.error("Failed to generate valid Cypher after retry")
+                    return cypher, []  # Return the invalid query for debugging
+        
+        return "", []
+    
     def _query_kg(self, question: str, top_k: int) -> tuple:
         """Generate a Cypher query and execute it, returning (cypher, result)."""
         query_chain = self.query_chain_factory()
