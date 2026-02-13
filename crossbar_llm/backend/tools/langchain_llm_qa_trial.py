@@ -443,6 +443,14 @@ class QueryChain:
             self.last_resolution_reason = "resolver_disabled"
             self.last_resolution_detail = "resolver_disabled"
 
+        # Build clean schema text for LLM prompt
+        schema_text = ""
+        if self.schema_manager:
+            try:
+                schema_text = self.schema_manager.format_schema_for_llm()
+            except Exception as e:
+                logging.warning(f"Failed to format schema for LLM: {e}")
+
         if self.search_type == "db_search":
             anchor_entities = self._format_anchor_entities(schema_context)
             resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
@@ -454,26 +462,14 @@ class QueryChain:
                     # Get relevant examples based on the question
                     examples = get_relevant_examples(question, max_examples=2)
                     
-                    # Add schema reminders
-                    schema_reminders = (
-                        "\n\n## IMPORTANT SCHEMA REMINDERS:\n"
-                        "- For Protein nodes, use {primaryAccession: '...'} or {geneName: '...'}\n"
-                        "- For Gene nodes, use {geneName: '...'}\n"
-                        "- NEVER use {id: '...'} unless 'id' is explicitly in schema\n"
-                        "- Always check property names against the resolved schema above\n"
-                    )
-                    
-                    # Enhance question with examples and reminders
-                    enhanced_question = f"{question}\n{schema_reminders}\n{examples}"
+                    # Enhance question with examples
+                    enhanced_question = f"{question}\n\n{examples}"
                 except Exception as e:
                     logging.warning(f"Failed to enhance question with schema guidance: {e}")
             
             logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (db_search)")
             prompt_text = CYPHER_GENERATION_PROMPT.format(
-                node_types=schema_context["nodes"],
-                node_properties=schema_context["node_properties"],
-                edge_properties=schema_context["edge_properties"],
-                edges=schema_context["edges"],
+                schema_text=schema_text,
                 resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=enhanced_question,
@@ -483,10 +479,7 @@ class QueryChain:
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": schema_context["nodes"],
-                        "node_properties": schema_context["node_properties"],
-                        "edge_properties": schema_context["edge_properties"],
-                        "edges": schema_context["edges"],
+                        "schema_text": schema_text,
                         "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": enhanced_question,
@@ -510,10 +503,7 @@ class QueryChain:
             logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (vector_search)")
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
-                node_types=schema_context["nodes"],
-                node_properties=schema_context["node_properties"],
-                edge_properties=schema_context["edge_properties"],
-                edges=schema_context["edges"],
+                schema_text=schema_text,
                 resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=question,
@@ -523,10 +513,7 @@ class QueryChain:
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": schema_context["nodes"],
-                        "node_properties": schema_context["node_properties"],
-                        "edge_properties": schema_context["edge_properties"],
-                        "edges": schema_context["edges"],
+                        "schema_text": schema_text,
                         "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": question,
@@ -551,10 +538,7 @@ class QueryChain:
             logging.getLogger("batch_pipeline").info("Cypher gen: building prompt (vector_search + embedding)")
             prompt_text = VECTOR_SEARCH_CYPHER_GENERATION_PROMPT.format(
                 vector_index=vector_index,
-                node_types=schema_context["nodes"],
-                node_properties=schema_context["node_properties"],
-                edge_properties=schema_context["edge_properties"],
-                edges=schema_context["edges"],
+                schema_text=schema_text,
                 resolved_schema=resolved_schema,
                 anchor_entities=anchor_entities,
                 question=question,
@@ -565,10 +549,7 @@ class QueryChain:
             self.generated_query = (
                 self.cypher_chain.invoke(
                     {
-                        "node_types": schema_context["nodes"],
-                        "node_properties": schema_context["node_properties"],
-                        "edge_properties": schema_context["edge_properties"],
-                        "edges": schema_context["edges"],
+                        "schema_text": schema_text,
                         "resolved_schema": resolved_schema,
                         "anchor_entities": anchor_entities,
                         "question": question,
@@ -644,6 +625,13 @@ class QueryChain:
 
         logging.warning(f"Invalid headers detected: {invalid}")
         resolved_schema = json.dumps(schema_context, ensure_ascii=False, indent=2)
+        # Build schema text for retry
+        schema_text = ""
+        if self.schema_manager:
+            try:
+                schema_text = self.schema_manager.format_schema_for_llm()
+            except Exception:
+                pass
         retry_prompt = (
             f"{prompt_text}\n\n"
             f"Your previous query used headers not present in the resolved schema: {sorted(invalid)}.\n"
@@ -653,10 +641,7 @@ class QueryChain:
         retry_query = (
             self.cypher_chain.invoke(
                 {
-                    "node_types": schema_context["nodes"],
-                    "node_properties": schema_context["node_properties"],
-                    "edge_properties": schema_context["edge_properties"],
-                    "edges": schema_context["edges"],
+                    "schema_text": schema_text,
                     "resolved_schema": resolved_schema,
                     "anchor_entities": self._format_anchor_entities(schema_context),
                     "question": question,

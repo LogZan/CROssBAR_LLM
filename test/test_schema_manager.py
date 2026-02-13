@@ -307,5 +307,176 @@ class TestSchemaManagerEdgeCases(unittest.TestCase):
         os.rmdir(temp_dir)
 
 
+class TestFormatSchemaForLLM(unittest.TestCase):
+    """Test the format_schema_for_llm method."""
+
+    def setUp(self):
+        """Set up test schema with abstract and concrete labels."""
+        self.test_schema = {
+            "nodes": [
+                {"labels": [
+                    "Protein", "Gene", "Disease", "Drug",
+                    "NamedThing", "Entity", "BiologicalEntity",
+                    "CatalyticActivityAnnotation",
+                ]}
+            ],
+            "node_properties": [
+                {
+                    "labels": "Protein",
+                    "properties": [
+                        {"property": "primaryAccession"},
+                        {"property": "geneName"},
+                    ]
+                },
+                {
+                    "labels": "Gene",
+                    "properties": [
+                        {"property": "geneName"},
+                        {"property": "ensemblId"},
+                    ]
+                },
+                {
+                    "labels": "Drug",
+                    "properties": [
+                        {"property": "name"},
+                        {"property": "id"},
+                    ]
+                },
+                {
+                    "labels": "CatalyticActivityAnnotation",
+                    "properties": [
+                        {"property": "id"},
+                    ]
+                },
+            ],
+            "edges": [
+                "(:Gene)-[:Gene_encodes_protein]->(:Protein)",
+                "(:NamedThing)-[:Gene_encodes_protein]->(:Protein)",
+                "(:Drug)-[:Drug_targets_protein]->(:Protein)",
+                "(:NamedThing)-[:Drug_targets_protein]->(:NamedThing)",
+                "(:NamedThing)-[:Drug_targets_protein]->(:Protein)",
+                "(:Entity)-[:Drug_targets_protein]->(:Protein)",
+                "(:Protein)-[:Protein_has_catalytic_activity]->(:CatalyticActivityAnnotation)",
+                "(:NamedThing)-[:Protein_has_catalytic_activity]->(:CatalyticActivityAnnotation)",
+                "(:BiologicalEntity)-[:Protein_has_catalytic_activity]->(:CatalyticActivityAnnotation)",
+                # Edge where all sources and targets are abstract
+                "(:NamedThing)-[:Protein_has_allergen]->(:NamedThing)",
+                "(:BiologicalEntity)-[:Protein_has_allergen]->(:Entity)",
+            ],
+            "edge_properties": [
+                {
+                    "type": "Drug_targets_protein",
+                    "properties": [{"property": "source"}, {"property": "score"}]
+                },
+                {
+                    "type": "Protein_has_catalytic_activity",
+                    "properties": [{"property": "ecNumber"}, {"property": "name"}]
+                },
+            ],
+        }
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.schema_path = os.path.join(self.temp_dir, "test_schema.json")
+        with open(self.schema_path, "w") as f:
+            json.dump(self.test_schema, f)
+
+    def tearDown(self):
+        if os.path.exists(self.schema_path):
+            os.remove(self.schema_path)
+        os.rmdir(self.temp_dir)
+
+    def test_format_schema_separates_nodes_and_relationships(self):
+        """Schema output should have separate Node types and Relationship types sections."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        self.assertIn("## Node types", result)
+        self.assertIn("## Relationship types", result)
+
+    def test_format_schema_excludes_abstract_node_labels(self):
+        """Abstract labels like NamedThing, Entity should not appear as node types."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        # Should include concrete nodes
+        self.assertIn("Protein:", result)
+        self.assertIn("Gene:", result)
+        self.assertIn("Drug:", result)
+        # NamedThing should NOT be listed as a node type
+        # (it may appear in the text instructions, so check carefully)
+        lines = result.split("\n")
+        node_section_lines = []
+        in_node_section = False
+        for line in lines:
+            if "## Node types" in line:
+                in_node_section = True
+                continue
+            if "## Relationship types" in line:
+                in_node_section = False
+            if in_node_section and line.strip().startswith("NamedThing"):
+                self.fail("NamedThing should not appear as a node type entry")
+
+    def test_format_schema_deduplicates_edges(self):
+        """Edges with abstract source/target should be filtered, only concrete kept."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        # Drug_targets_protein should show (Drug)->(Protein), NOT (NamedThing)->(Protein)
+        self.assertIn("Drug_targets_protein", result)
+        # Find the Drug_targets_protein line and verify it only shows concrete types
+        rel_section = result.split("## Relationship types")[1].split("## Critical rules")[0]
+        dtp_lines = [l.strip() for l in rel_section.split("\n")
+                     if l.strip().startswith("Drug_targets_protein")]
+        self.assertTrue(len(dtp_lines) > 0, "Drug_targets_protein relationship not found")
+        self.assertIn("(Drug)->(Protein)", dtp_lines[0])
+        self.assertNotIn("NamedThing", dtp_lines[0])
+
+    def test_format_schema_includes_relationship_properties(self):
+        """Relationship properties should be listed alongside the relationship type."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        self.assertIn("ecNumber", result)
+        self.assertIn("Drug_targets_protein", result)
+        self.assertIn("score", result)
+
+    def test_format_schema_includes_critical_rules(self):
+        """Critical rules section should be present."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        self.assertIn("Critical rules", result)
+        self.assertIn("NEVER use a relationship type", result)
+        self.assertIn("square brackets", result)
+        self.assertIn("parentheses", result)
+
+    def test_format_schema_node_properties_listed(self):
+        """Node properties should be listed with each node type."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        self.assertIn("primaryAccession", result)
+        self.assertIn("geneName", result)
+
+    def test_format_schema_infers_concrete_label_for_all_abstract_edges(self):
+        """Relationship types with only abstract edges should infer concrete labels."""
+        manager = SchemaManager(self.schema_path)
+        result = manager.format_schema_for_llm()
+        # Protein_has_allergen has only abstract edges but should be inferred
+        self.assertIn("Protein_has_allergen", result)
+        # The source should be inferred as Protein from the relationship name
+        rel_section = result.split("## Relationship types")[1].split("## Critical rules")[0]
+        allergen_line = [l for l in rel_section.split("\n") if "Protein_has_allergen" in l]
+        self.assertTrue(len(allergen_line) > 0)
+        self.assertIn("Protein", allergen_line[0])
+
+    def test_format_schema_empty_schema(self):
+        """format_schema_for_llm should return empty string for empty schema."""
+        temp_dir = tempfile.mkdtemp()
+        schema_path = os.path.join(temp_dir, "empty.json")
+        with open(schema_path, "w") as f:
+            json.dump({"nodes": [], "node_properties": [], "edges": [], "edge_properties": []}, f)
+        manager = SchemaManager(schema_path)
+        # Empty schema should still return something (header lines at minimum)
+        result = manager.format_schema_for_llm()
+        self.assertIsInstance(result, str)
+        os.remove(schema_path)
+        os.rmdir(temp_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

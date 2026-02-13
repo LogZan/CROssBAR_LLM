@@ -87,10 +87,9 @@ print("\n[6/7] Formatting prompt with schema...")
 start = time.time()
 question = "What proteins does aspirin target?"
 formatted_input = {
-    "node_types": schema["nodes"],
-    "node_properties": schema["node_properties"],
-    "edge_properties": schema["edge_properties"],
-    "edges": schema["edges"],
+    "schema_text": "",
+    "resolved_schema": "{}",
+    "anchor_entities": "",
     "question": question
 }
 print(f"✅ Done in {time.time() - start:.2f}s")

@@ -409,6 +409,122 @@ class SchemaManager:
 
         return True, None, None
 
+    # Abstract / parent node labels that should be excluded when
+    # presenting the schema to the LLM.  These appear in the graph
+    # because Neo4j stores the full label hierarchy, but using them in
+    # Cypher queries leads to overly broad or incorrect results.
+    ABSTRACT_NODE_LABELS: Set[str] = {
+        "NamedThing", "Entity", "BiologicalEntity",
+        "BiologicalProcessOrActivity", "ChemicalEntity",
+        "ChemicalMixture", "MolecularMixture",
+        "DiseaseOrPhenotypicFeature", "PhenotypicFeature",
+        "Polypeptide", "Description", "FunctionalAnnotation",
+        "SequenceFeature", "GeneOntology",
+    }
+
+    def format_schema_for_llm(self) -> str:
+        """
+        Produce a clean, deduplicated schema description for LLM prompts.
+
+        Compared to the raw ``graph_schema.json`` dump this method:
+
+        * Removes abstract / parent-class labels (e.g. ``NamedThing``,
+          ``Entity``) from node lists and relationship endpoints so the LLM
+          only sees concrete types.
+        * Deduplicates relationship patterns – for each relationship type only
+          the most specific (source, target) combination is kept.
+        * Clearly separates **node types** (with their properties) from
+          **relationship types** (with their properties) so the LLM does not
+          confuse nodes and relationships.
+
+        Returns:
+            A formatted string suitable for injection into an LLM prompt.
+        """
+        if not self.schema:
+            return ""
+
+        lines: List[str] = []
+
+        # ---- 1. Concrete node types with properties ----
+        concrete_nodes = sorted(
+            label for label in self.node_labels
+            if label not in self.ABSTRACT_NODE_LABELS
+        )
+
+        lines.append("## Node types (use these as node labels in MATCH patterns)")
+        lines.append("The following are NODE types. Use them ONLY inside (parentheses) in Cypher, e.g. (p:Protein).")
+        lines.append("NEVER use a node type inside square brackets [] – those are for relationships only.\n")
+
+        for node in concrete_nodes:
+            props = sorted(self.node_props_map.get(node, set()))
+            if props:
+                lines.append(f"  {node}: {', '.join(props)}")
+            else:
+                lines.append(f"  {node}")
+
+        # ---- 2. Deduplicated relationships ----
+        lines.append("\n## Relationship types (use these as relationship labels in MATCH patterns)")
+        lines.append("The following are RELATIONSHIP types. Use them ONLY inside [square brackets] in Cypher, e.g. -[:Drug_targets_protein]->.")
+        lines.append("NEVER use a relationship type inside (parentheses) – those are for nodes only.\n")
+
+        # Build deduplicated edge list: for each relationship type keep
+        # only edges whose source AND target are both concrete.
+        # When all edges for a relationship type involve only abstract labels,
+        # fall back to the most specific abstract label for each endpoint.
+        edge_map: Dict[str, List[Tuple[str, str]]] = {}
+        edge_map_all: Dict[str, List[Tuple[str, str]]] = {}
+        for edge_str in self.schema.get("edges", []):
+            if not isinstance(edge_str, str):
+                continue
+            match = re.match(
+                r"\(:(\w+)\)-\[:([^\]]+)\]->\(:(\w+)\)", edge_str
+            )
+            if not match:
+                continue
+            src, rel_type, tgt = match.groups()
+            edge_map_all.setdefault(rel_type, []).append((src, tgt))
+            if src in self.ABSTRACT_NODE_LABELS or tgt in self.ABSTRACT_NODE_LABELS:
+                continue
+            edge_map.setdefault(rel_type, []).append((src, tgt))
+
+        # For relationship types with no concrete edges, infer the best
+        # concrete pair from the relationship name and available abstract edges.
+        for rel_type, all_pairs in edge_map_all.items():
+            if rel_type in edge_map:
+                continue  # already has concrete edges
+            best_src = self._infer_concrete_label(
+                [s for s, _ in all_pairs], rel_type, position="source"
+            )
+            best_tgt = self._infer_concrete_label(
+                [t for _, t in all_pairs], rel_type, position="target"
+            )
+            if best_src and best_tgt:
+                edge_map[rel_type] = [(best_src, best_tgt)]
+
+        # Deduplicate within each relationship type
+        for rel_type in sorted(edge_map):
+            pairs = sorted(set(edge_map[rel_type]))
+            props = sorted(self.edge_props_map.get(rel_type, set()))
+            pair_strs = ", ".join(f"({s})->({t})" for s, t in pairs)
+            if props:
+                lines.append(f"  {rel_type}  [{pair_strs}]  properties: {', '.join(props)}")
+            else:
+                lines.append(f"  {rel_type}  [{pair_strs}]")
+
+        # ---- 3. Critical rules ----
+        lines.append("\n## Critical rules for Cypher generation")
+        lines.append("1. Use ONLY the node types listed above inside (parentheses).")
+        lines.append("2. Use ONLY the relationship types listed above inside [square brackets].")
+        lines.append("3. Do NOT use a relationship type as a node label and vice versa.")
+        lines.append("4. Use ONLY the properties listed for each node/relationship type.")
+        lines.append("5. Do NOT use properties from one node type on a different node type.")
+        lines.append("6. Do NOT use properties from a relationship on a node or vice versa.")
+        lines.append("7. For annotation data (catalytic activity, cofactor, binding site, etc.),")
+        lines.append("   the data is stored in RELATIONSHIP properties, NOT in the target node.")
+        lines.append("   Use  -[rel:Relationship_type]->()  and access  rel.property_name.")
+
+        return "\n".join(lines)
+
     def _find_similar_label(self, label: str) -> Optional[str]:
         """Find similar node label using simple string matching."""
         label_lower = label.lower()
@@ -423,4 +539,39 @@ class SchemaManager:
         for et in self.edge_types:
             if edge_lower in et.lower() or et.lower() in edge_lower:
                 return et
+        return None
+
+    def _infer_concrete_label(
+        self, labels: List[str], rel_type: str, position: str
+    ) -> Optional[str]:
+        """Infer the best concrete node label for a relationship endpoint.
+
+        When all edge endpoints for a relationship type are abstract, try to
+        derive the intended concrete label from the relationship name (e.g.
+        ``Protein_has_toxic_dose`` → source is ``Protein``) and from the
+        set of available labels (pick the most specific non-abstract one).
+        """
+        # 1. Try to pick the most specific non-abstract label from the list
+        concrete = [l for l in labels if l not in self.ABSTRACT_NODE_LABELS]
+        if concrete:
+            # Return the longest (typically most specific) label
+            return max(set(concrete), key=len)
+
+        # 2. Infer from relationship name for the source position
+        if position == "source":
+            # E.g. "Protein_has_toxic_dose" → "Protein"
+            prefix = rel_type.split("_")[0]
+            if prefix in self.node_labels and prefix not in self.ABSTRACT_NODE_LABELS:
+                return prefix
+
+        # 3. For target position, pick the most specific abstract label
+        #    that is also a known node label (prefer the longest name).
+        if labels:
+            # Sort by name length descending – longer names tend to be
+            # more specific (e.g. Toxic_doseAnnotation > FunctionalAnnotation)
+            candidates = sorted(set(labels), key=len, reverse=True)
+            for c in candidates:
+                if c in self.node_labels:
+                    return c
+
         return None
