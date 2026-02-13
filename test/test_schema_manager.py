@@ -13,7 +13,6 @@ import unittest
 
 # Add backend to path
 import sys
-import importlib.util
 
 _backend_dir = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

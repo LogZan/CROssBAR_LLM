@@ -243,7 +243,7 @@ class SchemaManager:
         nodes_to_show = (
             relevant_nodes
             if relevant_nodes
-            else sorted(list(self.node_labels))[:10]  # Limit to avoid huge prompts
+            else sorted(list(self.node_labels))[:10]  # Limit to first 10 alphabetically
         )
 
         # Node information

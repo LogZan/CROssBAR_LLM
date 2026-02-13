@@ -889,10 +889,11 @@ class MultiHopReasoner:
             context_text = self.context_manager.get_context_for_llm()
             
             # --- 3. Ask the LLM what to do ---
+            # Note: 'evidence' field now contains compressed/managed context, not raw evidence
             decision_raw = self.decision_chain.invoke({
                 "question": question,
                 "current_node": current_node,
-                "evidence": context_text,  # Use managed context instead of raw evidence
+                "evidence": context_text,  # Managed context from ContextManager
                 "step": str(step),
                 "max_steps": str(self.max_steps),
             })

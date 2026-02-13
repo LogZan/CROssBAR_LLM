@@ -6,7 +6,7 @@ Provides tools to diagnose and explain reasoning failures.
 
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ class ReasoningDiagnostics:
         return None
 
     @staticmethod
-    def analyze_failure_pattern(trace: List[Dict]) -> Dict[str, any]:
+    def analyze_failure_pattern(trace: List[Dict]) -> Dict[str, Any]:
         """
         Analyze overall failure patterns in reasoning trace.
 
